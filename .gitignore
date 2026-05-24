@@ -1,0 +1,16 @@
+# Environment files (secrets)
+.env
+.env.*
+!.env.example
+
+# Build output
+main
+*.exe
+*.dSYM
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
