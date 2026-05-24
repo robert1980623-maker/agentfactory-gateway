@@ -321,6 +321,73 @@ func renderProgressBar(progress float64) string {
 	return strings.Repeat("█", filled) + strings.Repeat("░", empty)
 }
 
+// buildAgentGrid creates grid rows for 6-15 agents (3 per line).
+func buildAgentGrid(agents []protocol.SubAgentInfo) []string {
+	var rows []string
+	currentRow := ""
+	cols := 0
+	for _, agent := range agents {
+		emoji := agentEmoji(agent.Role)
+		shortID := agent.AgentID
+		if len(shortID) > 8 {
+			shortID = shortID[:8]
+		}
+		statusIcon := "⏳"
+		if agent.Status == "done" {
+			statusIcon = "✅"
+		} else if agent.Status == "error" {
+			statusIcon = "❌"
+		}
+		item := fmt.Sprintf("%s %s [%.0f%%] %s", emoji, shortID, agent.Progress*100, statusIcon)
+		
+		if cols == 0 {
+			currentRow = item
+		} else {
+			currentRow += "  |  " + item
+		}
+		cols++
+		
+		if cols >= 3 {
+			rows = append(rows, currentRow)
+			currentRow = ""
+			cols = 0
+		}
+	}
+	if currentRow != "" {
+		rows = append(rows, currentRow)
+	}
+	return rows
+}
+
+// buildAgentSummary creates a summary section for >15 agents.
+func buildAgentSummary(agents []protocol.SubAgentInfo) []slack.Block {
+	doneCount := 0
+	runCount := 0
+	errCount := 0
+	for _, a := range agents {
+		switch a.Status {
+		case "done":
+			doneCount++
+		case "error":
+			errCount++
+		default:
+			runCount++
+		}
+	}
+	
+	summary := fmt.Sprintf("✅ %d done  |  ⏳ %d running  |  ❌ %d error", doneCount, runCount, errCount)
+	
+	return []slack.Block{
+		slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType, summary, false, false),
+			nil, nil,
+		),
+		slack.NewContextBlock("", slack.NewTextBlockObject(
+			slack.PlainTextType, "[View details in thread →]", false, false,
+		)),
+	}
+}
+
 // agentEmoji maps agent roles to emojis.
 func agentEmoji(role string) string {
 	switch role {
@@ -414,12 +481,29 @@ func buildDispatchBlocks(event *protocol.SlackEvent, taskData *TaskData) []slack
 		),
 	}
 
-	// Agent rows
-	for _, agent := range p.Agents {
-		blocks = append(blocks, slack.NewSectionBlock(
-			slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("```\n%s\n```", renderAgentRow(agent)), false, false),
-			nil, nil,
-		))
+	// Agent rows with Compact Mode
+	agentCount := len(p.Agents)
+	switch {
+	case agentCount <= 5:
+		// Level 1: Full rows
+		for _, agent := range p.Agents {
+			blocks = append(blocks, slack.NewSectionBlock(
+				slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("```\n%s\n```", renderAgentRow(agent)), false, false),
+				nil, nil,
+			))
+		}
+	case agentCount <= 15:
+		// Level 2: Grid format (3 per line)
+		gridRows := buildAgentGrid(p.Agents)
+		for _, row := range gridRows {
+			blocks = append(blocks, slack.NewSectionBlock(
+				slack.NewTextBlockObject(slack.MarkdownType, row, false, false),
+				nil, nil,
+			))
+		}
+	default:
+		// Level 3: Summary only
+		blocks = append(blocks, buildAgentSummary(p.Agents)...)
 	}
 
 	// Tool call for specific subtask

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"sync"
 	"time"
 
 	"github.com/agentfactory/gateway/protocol"
@@ -31,7 +30,6 @@ func NewStreamWorker(pythonBin string) *StreamWorker {
 
 // Execute runs the Python worker and streams events back through the callback.
 // It blocks until the process completes.
-// Debounce: UI updates are limited to max 1 per second.
 func (w *StreamWorker) Execute(req protocol.TaskRequest, cb StreamCallback) error {
 	payload, err := json.Marshal(req)
 	if err != nil {
@@ -55,21 +53,11 @@ func (w *StreamWorker) Execute(req protocol.TaskRequest, cb StreamCallback) erro
 		return fmt.Errorf("start python worker: %w", err)
 	}
 
-	// Debounce state: last event forwarded time.
-	var mu sync.Mutex
-	lastForwarded := time.Time{}
-
-	// Forward an event through the callback, respecting the debounce interval.
-	forward := func(event *protocol.SlackEvent) {
-		mu.Lock()
-		defer mu.Unlock()
-		now := time.Now()
-		if now.Sub(lastForwarded) < time.Second {
-			return // debounced
-		}
-		lastForwarded = now
+	// Create throttler with 1s debounce for progress events.
+	throttler := NewMessageThrottler(1*time.Second, func(event *protocol.SlackEvent) {
 		cb(event, nil)
-	}
+	})
+	defer throttler.Stop()
 
 	// Stream stdout line-by-line.
 	scanner := bufio.NewScanner(stdout)
@@ -81,11 +69,10 @@ func (w *StreamWorker) Execute(req protocol.TaskRequest, cb StreamCallback) erro
 
 		var event protocol.SlackEvent
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			// Not valid JSON — skip (could be debug output).
 			continue
 		}
 
-		forward(&event)
+		throttler.Push(&event)
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -105,9 +92,8 @@ func (w *StreamWorker) Execute(req protocol.TaskRequest, cb StreamCallback) erro
 		return fmt.Errorf("python worker exited with error: %w", err)
 	}
 
-	// Flush the final event (if any was debounced).
-	mu.Lock()
-	mu.Unlock()
+	// Flush any remaining buffered event.
+	throttler.Flush()
 
 	return nil
 }

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -604,5 +605,98 @@ func TestBuildTaskCard_SubtaskDone(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestBuildTaskCard_CompactGrid(t *testing.T) {
+	var agents []protocol.SubAgentInfo
+	for i := 0; i < 8; i++ {
+		agents = append(agents, protocol.SubAgentInfo{
+			AgentID:       fmt.Sprintf("Agent-%d", i+1),
+			Role:          "db",
+			Progress:      0.5,
+			CurrentAction: "Working",
+		})
+	}
+	event := &protocol.SlackEvent{
+		Type: protocol.EventTypeProgress,
+		Payload: &protocol.EventPayload{
+			TaskType:    "dispatch",
+			Agents:      agents,
+			TotalAgents: 8,
+		},
+	}
+
+	blocks := BuildTaskCard(event, nil)
+	if blocks == nil {
+		t.Fatal("expected non-nil blocks")
+	}
+
+	// Check grid rows
+	gridCount := 0
+	for _, b := range blocks {
+		if section, ok := b.(*slack.SectionBlock); ok {
+			if strings.Contains(section.Text.Text, "Agent-") && strings.Contains(section.Text.Text, "|") {
+				gridCount++
+			}
+		}
+	}
+	if gridCount != 3 { // 8 agents / 3 per line = 3 rows
+		t.Errorf("expected 3 grid rows, got %d", gridCount)
+	}
+
+	// Check total blocks < 50
+	if len(blocks) >= 50 {
+		t.Errorf("expected <50 blocks, got %d", len(blocks))
+	}
+}
+
+func TestBuildTaskCard_CompactSummary(t *testing.T) {
+	var agents []protocol.SubAgentInfo
+	for i := 0; i < 20; i++ {
+		status := "running"
+		if i%3 == 0 {
+			status = "done"
+		}
+		if i%7 == 0 {
+			status = "error"
+		}
+		agents = append(agents, protocol.SubAgentInfo{
+			AgentID: fmt.Sprintf("Agent-%d", i+1),
+			Role:    "db",
+			Progress: 0.5,
+			Status:  status,
+		})
+	}
+	event := &protocol.SlackEvent{
+		Type: protocol.EventTypeProgress,
+		Payload: &protocol.EventPayload{
+			TaskType:    "dispatch",
+			Agents:      agents,
+			TotalAgents: 20,
+		},
+	}
+
+	blocks := BuildTaskCard(event, nil)
+	if blocks == nil {
+		t.Fatal("expected non-nil blocks")
+	}
+
+	// Check summary
+	foundSummary := false
+	for _, b := range blocks {
+		if section, ok := b.(*slack.SectionBlock); ok {
+			if strings.Contains(section.Text.Text, "done") && strings.Contains(section.Text.Text, "running") {
+				foundSummary = true
+			}
+		}
+	}
+	if !foundSummary {
+		t.Error("expected summary block with done/running counts")
+	}
+
+	// Check total blocks < 50
+	if len(blocks) >= 50 {
+		t.Errorf("expected <50 blocks, got %d", len(blocks))
 	}
 }
