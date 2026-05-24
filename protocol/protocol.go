@@ -1,9 +1,10 @@
 package protocol
 
-// TaskRequest represents a task sent to a Python worker.
+// TaskRequest represents a task sent to a worker.
 type TaskRequest struct {
-	Task    string                 `json:"task"`
-	Context map[string]interface{} `json:"context,omitempty"`
+	Task     string                 `json:"task"`
+	TaskType string                 `json:"task_type,omitempty"` // "internal" | "external"
+	Context  map[string]interface{} `json:"context,omitempty"`
 }
 
 // TaskResponse represents a response from a Python worker.
