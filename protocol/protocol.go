@@ -29,6 +29,31 @@ type SlackEvent struct {
 	Payload *EventPayload  `json:"payload,omitempty"`
 }
 
+// ToolInfo describes a tool/function call made by the agent.
+type ToolInfo struct {
+	Name   string `json:"name"`
+	Args   string `json:"args"`
+	Result string `json:"result,omitempty"`
+}
+
+// ButtonAction represents an interactive button in Block Kit.
+type ButtonAction struct {
+	Text  string `json:"text"`
+	Value string `json:"value"`
+	Style string `json:"style"` // primary, danger, or empty
+	Type  string `json:"type"`  // always "button"
+}
+
+// SubAgentInfo represents a single agent in a multi-agent dispatch.
+type SubAgentInfo struct {
+	AgentID       string  `json:"agent_id"`
+	Role          string  `json:"role"`
+	Task          string  `json:"task"`
+	Progress      float64 `json:"progress"`
+	Status        string  `json:"status"` // "running" | "done" | "error"
+	CurrentAction string  `json:"current_action"`
+}
+
 // EventPayload carries the data for a streaming event. Fields vary by type.
 type EventPayload struct {
 	// Common
@@ -39,6 +64,12 @@ type EventPayload struct {
 	UserInput  string `json:"user_input,omitempty"`
 	TotalSteps int    `json:"total_steps,omitempty"`
 	CurrentStep int   `json:"current_step,omitempty"`
+
+	// Dispatch / Multi-agent
+	TaskType    string         `json:"task_type,omitempty"`    // "single" | "dispatch"
+	TotalAgents int            `json:"total_agents,omitempty"`
+	Agents      []SubAgentInfo `json:"agents,omitempty"`
+	SubTaskID   string         `json:"subtask_id,omitempty"`
 
 	// Progress
 	Progress float64 `json:"progress,omitempty"` // 0.0 - 1.0
@@ -55,24 +86,9 @@ type EventPayload struct {
 	Actions []ButtonAction `json:"actions,omitempty"`
 
 	// Metadata
-	Tokens     int    `json:"tokens,omitempty"`
+	Tokens      int    `json:"tokens,omitempty"`
 	ElapsedTime string `json:"elapsed_time,omitempty"`
 
 	// Error
 	Message string `json:"message,omitempty"`
-}
-
-// ToolInfo describes a tool/function call made by the agent.
-type ToolInfo struct {
-	Name   string `json:"name"`
-	Args   string `json:"args"`
-	Result string `json:"result,omitempty"`
-}
-
-// ButtonAction represents an interactive button in Block Kit.
-type ButtonAction struct {
-	Text  string `json:"text"`
-	Value string `json:"value"`
-	Style string `json:"style"` // primary, danger, or empty
-	Type  string `json:"type"`  // always "button"
 }

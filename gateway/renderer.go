@@ -18,13 +18,22 @@ func BuildTaskCard(event *protocol.SlackEvent, taskData *TaskData) []slack.Block
 		return nil
 	}
 
+	p := event.Payload
 	var blocks []slack.Block
 
 	switch event.Type {
 	case protocol.EventTypeStart:
-		blocks = buildStartBlocks(event)
+		if p != nil && p.TaskType == "dispatch" {
+			blocks = buildDispatchStartBlocks(event, taskData)
+		} else {
+			blocks = buildStartBlocks(event)
+		}
 	case protocol.EventTypeProgress:
-		blocks = buildProgressBlocks(event, taskData)
+		if p != nil && len(p.Agents) > 0 {
+			blocks = buildDispatchBlocks(event, taskData)
+		} else {
+			blocks = buildProgressBlocks(event, taskData)
+		}
 	case protocol.EventTypeDone:
 		blocks = buildDoneBlocks(event, taskData)
 	case protocol.EventTypeError:
@@ -310,4 +319,142 @@ func renderProgressBar(progress float64) string {
 	empty := progressWidth - filled
 
 	return strings.Repeat("█", filled) + strings.Repeat("░", empty)
+}
+
+// agentEmoji maps agent roles to emojis.
+func agentEmoji(role string) string {
+	switch role {
+	case "db", "database", "model":
+		return "🤖"
+	case "test", "tests", "qa":
+		return "🧪"
+	case "docker", "deploy", "ops", "devops":
+		return "🐳"
+	case "doc", "docs", "writer":
+		return "📝"
+	case "search", "research":
+		return "🔍"
+	default:
+		return "🤖"
+	}
+}
+
+// renderAgentRow formats a single agent line for dispatch view.
+func renderAgentRow(agent protocol.SubAgentInfo) string {
+	emoji := agentEmoji(agent.Role)
+	bar := renderProgressBar(agent.Progress)
+	action := agent.CurrentAction
+	if action == "" {
+		action = "Processing..."
+	}
+	statusIcon := "⏳"
+	if agent.Status == "done" {
+		statusIcon = "✅"
+	} else if agent.Status == "error" {
+		statusIcon = "❌"
+	}
+
+	return fmt.Sprintf("%s %s  [%s]  %.0f%%  %s %s", emoji, agent.AgentID, bar, agent.Progress*100, statusIcon, action)
+}
+
+// buildDispatchStartBlocks creates blocks for a dispatch task start.
+func buildDispatchStartBlocks(event *protocol.SlackEvent, taskData *TaskData) []slack.Block {
+	p := event.Payload
+	if p == nil {
+		p = &protocol.EventPayload{}
+	}
+
+	userInput := p.UserInput
+	if userInput == "" {
+		userInput = "_No input provided_"
+	}
+
+	agentsText := fmt.Sprintf("Launching %d agents...", p.TotalAgents)
+
+	return []slack.Block{
+		slack.NewHeaderBlock(slack.NewTextBlockObject(
+			slack.PlainTextType, "⚡ Dispatch Started", true, false,
+		)),
+		slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("*Input:* %s", userInput), false, false),
+			nil, nil,
+		),
+		slack.NewDividerBlock(),
+		slack.NewContextBlock("", slack.NewTextBlockObject(
+			slack.PlainTextType, agentsText, false, false,
+		)),
+	}
+}
+
+// buildDispatchBlocks creates blocks for multi-agent dispatch progress.
+func buildDispatchBlocks(event *protocol.SlackEvent, taskData *TaskData) []slack.Block {
+	p := event.Payload
+	if p == nil || len(p.Agents) == 0 {
+		return buildProgressBlocks(event, taskData)
+	}
+
+	// Calculate overall progress
+	totalProgress := 0.0
+	for _, a := range p.Agents {
+		totalProgress += a.Progress
+	}
+	overallProgress := totalProgress / float64(len(p.Agents))
+	if overallProgress > 1.0 {
+		overallProgress = 1.0
+	}
+
+	// Header
+	blocks := []slack.Block{
+		slack.NewHeaderBlock(slack.NewTextBlockObject(
+			slack.PlainTextType, fmt.Sprintf("⏳ Dispatch: %.0f%%", overallProgress*100), true, false,
+		)),
+		slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("```%s```  %.0f%%", renderProgressBar(overallProgress), overallProgress*100), false, false),
+			nil, nil,
+		),
+	}
+
+	// Agent rows
+	for _, agent := range p.Agents {
+		blocks = append(blocks, slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("```\n%s\n```", renderAgentRow(agent)), false, false),
+			nil, nil,
+		))
+	}
+
+	// Tool call for specific subtask
+	if p.Tool != nil && p.SubTaskID != "" {
+		toolText := fmt.Sprintf("🔧 *%s* (%s)", p.Tool.Name, p.SubTaskID)
+		if p.Tool.Args != "" {
+			toolText += fmt.Sprintf("\n*Args:* ```%s```", p.Tool.Args)
+		}
+		blocks = append(blocks, slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType, toolText, false, false),
+			nil, nil,
+		))
+	}
+
+	// Metadata footer
+	footerParts := []string{}
+	if p.Model != "" {
+		footerParts = append(footerParts, fmt.Sprintf("🤖 %s", p.Model))
+	} else if taskData != nil && taskData.Model != "" {
+		footerParts = append(footerParts, fmt.Sprintf("🤖 %s", taskData.Model))
+	}
+	if p.TotalAgents > 0 {
+		footerParts = append(footerParts, fmt.Sprintf("👥 %d agents active", p.TotalAgents))
+	}
+	if p.ElapsedTime != "" {
+		footerParts = append(footerParts, fmt.Sprintf("⏱️ %s", p.ElapsedTime))
+	}
+
+	if len(footerParts) > 0 {
+		footer := strings.Join(footerParts, " | ")
+		blocks = append(blocks, slack.NewDividerBlock())
+		blocks = append(blocks, slack.NewContextBlock("", slack.NewTextBlockObject(
+			slack.PlainTextType, footer, false, false,
+		)))
+	}
+
+	return blocks
 }

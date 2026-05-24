@@ -472,3 +472,137 @@ func TestBuildTaskCard_ToolCall_NilTool(t *testing.T) {
 		t.Errorf("expected nil or empty blocks for nil tool, got %d", len(blocks))
 	}
 }
+
+func TestBuildTaskCard_DispatchStart(t *testing.T) {
+	event := &protocol.SlackEvent{
+		Type: protocol.EventTypeStart,
+		Payload: &protocol.EventPayload{
+			TaskType:    "dispatch",
+			UserInput:   "Build API project",
+			TotalAgents: 3,
+		},
+	}
+
+	blocks := BuildTaskCard(event, nil)
+	if blocks == nil {
+		t.Fatal("expected non-nil blocks")
+	}
+
+	header, ok := blocks[0].(*slack.HeaderBlock)
+	if !ok {
+		t.Fatal("first block should be HeaderBlock")
+	}
+	if header.Text.Text != "⚡ Dispatch Started" {
+		t.Errorf("unexpected header text: %s", header.Text.Text)
+	}
+
+	ctxBlock, ok := blocks[3].(*slack.ContextBlock)
+	if !ok {
+		t.Fatal("fourth block should be ContextBlock")
+	}
+	if !strings.Contains(ctxBlock.ContextElements.Elements[0].(*slack.TextBlockObject).Text, "Launching 3 agents") {
+		t.Errorf("expected agent launch text: %s", ctxBlock.ContextElements.Elements[0].(*slack.TextBlockObject).Text)
+	}
+}
+
+func TestBuildTaskCard_MultiAgentProgress(t *testing.T) {
+	event := &protocol.SlackEvent{
+		Type: protocol.EventTypeProgress,
+		Payload: &protocol.EventPayload{
+			TaskType: "dispatch",
+			Agents: []protocol.SubAgentInfo{
+				{AgentID: "Agent A", Role: "db", Progress: 0.4, CurrentAction: "Creating models"},
+				{AgentID: "Agent B", Role: "tests", Progress: 0.2, CurrentAction: "Writing tests"},
+				{AgentID: "Agent C", Role: "docker", Progress: 0.1, CurrentAction: "Configuring"},
+			},
+			TotalAgents: 3,
+			ElapsedTime: "5s",
+		},
+	}
+
+	blocks := BuildTaskCard(event, nil)
+	if blocks == nil {
+		t.Fatal("expected non-nil blocks")
+	}
+
+	// Check overall progress in header
+	header, ok := blocks[0].(*slack.HeaderBlock)
+	if !ok {
+		t.Fatal("first block should be HeaderBlock")
+	}
+	if header.Text.Text != "⏳ Dispatch: 23%" {
+		t.Errorf("unexpected header text: %s", header.Text.Text)
+	}
+
+	// Check agent rows (should have 3 sections for agents)
+	agentSections := 0
+	for _, b := range blocks {
+		if section, ok := b.(*slack.SectionBlock); ok {
+			if strings.Contains(section.Text.Text, "Agent A") {
+				agentSections++
+				if !strings.Contains(section.Text.Text, "🤖") {
+					t.Errorf("expected db agent emoji, got: %s", section.Text.Text)
+				}
+			}
+			if strings.Contains(section.Text.Text, "Agent B") {
+				agentSections++
+				if !strings.Contains(section.Text.Text, "🧪") {
+					t.Errorf("expected tests agent emoji, got: %s", section.Text.Text)
+				}
+			}
+			if strings.Contains(section.Text.Text, "Agent C") {
+				agentSections++
+				if !strings.Contains(section.Text.Text, "🐳") {
+					t.Errorf("expected docker agent emoji, got: %s", section.Text.Text)
+				}
+			}
+		}
+	}
+	if agentSections != 3 {
+		t.Errorf("expected 3 agent sections, got %d", agentSections)
+	}
+
+	// Check footer mentions agents active
+	foundAgents := false
+	for _, b := range blocks {
+		if ctx, ok := b.(*slack.ContextBlock); ok {
+			text := ctx.ContextElements.Elements[0].(*slack.TextBlockObject).Text
+			if strings.Contains(text, "3 agents active") {
+				foundAgents = true
+			}
+		}
+	}
+	if !foundAgents {
+		t.Error("expected 'agents active' in footer")
+	}
+}
+
+func TestBuildTaskCard_SubtaskDone(t *testing.T) {
+	event := &protocol.SlackEvent{
+		Type: protocol.EventTypeProgress,
+		Payload: &protocol.EventPayload{
+			TaskType: "dispatch",
+			Agents: []protocol.SubAgentInfo{
+				{AgentID: "Agent A", Role: "db", Progress: 1.0, Status: "done", CurrentAction: "Done"},
+				{AgentID: "Agent B", Role: "tests", Progress: 0.5, CurrentAction: "Writing tests"},
+			},
+			TotalAgents: 2,
+		},
+	}
+
+	blocks := BuildTaskCard(event, nil)
+	if blocks == nil {
+		t.Fatal("expected non-nil blocks")
+	}
+
+	// Check Agent A shows ✅
+	for _, b := range blocks {
+		if section, ok := b.(*slack.SectionBlock); ok {
+			if strings.Contains(section.Text.Text, "Agent A") {
+				if !strings.Contains(section.Text.Text, "✅") {
+					t.Errorf("expected done icon for Agent A: %s", section.Text.Text)
+				}
+			}
+		}
+	}
+}
