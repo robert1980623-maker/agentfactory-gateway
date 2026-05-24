@@ -22,6 +22,7 @@ const (
 	EventTypeDone     SlackEventType = "done"
 	EventTypeError    SlackEventType = "error"
 	EventTypeToolCall SlackEventType = "tool_call" // NEW
+	EventTypePaused   SlackEventType = "paused"    // HITL: paused at checkpoint
 )
 
 // SlackEvent represents a single line in a JSONL streaming output from the Python worker.
@@ -53,6 +54,15 @@ type SubAgentInfo struct {
 	Progress      float64 `json:"progress"`
 	Status        string  `json:"status"` // "running" | "done" | "error"
 	CurrentAction string  `json:"current_action"`
+}
+
+// ChainContext carries HITL checkpoint data when the Python Core pauses
+// at a review step (e.g., Architect design review, Developer code review).
+type ChainContext struct {
+	PausedStep      string `json:"paused_step,omitempty"`      // e.g., "architect", "developer"
+	DesignDoc       string `json:"design_doc,omitempty"`       // summary of the design
+	ModificationLog string `json:"modification_log,omitempty"` // content of MODIFICATION_LOG.md
+	FeedbackRequired bool  `json:"feedback_required"`          // true if user must provide feedback
 }
 
 // EventPayload carries the data for a streaming event. Fields vary by type.
@@ -92,4 +102,7 @@ type EventPayload struct {
 
 	// Error
 	Message string `json:"message,omitempty"`
+
+	// HITL Chain Context
+	ChainContext *ChainContext `json:"chain_context,omitempty"`
 }

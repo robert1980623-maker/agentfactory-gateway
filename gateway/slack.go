@@ -21,17 +21,20 @@ type SlackGateway struct {
 	worker       *worker.PythonWorker
 	streamWorker *worker.StreamWorker
 	stateMgr     *statemgr.StateManager
+	hitlHandler  *HITLHandler
 }
 
 func NewSlackGateway(botToken, appToken string, w *worker.PythonWorker, sw *worker.StreamWorker, stateMgr *statemgr.StateManager) *SlackGateway {
 	client := slack.New(botToken, slack.OptionAppLevelToken(appToken))
 	socketmodeClient := socketmode.New(client)
+	hitlHandler := NewHITLHandler(w, sw, stateMgr, client)
 	return &SlackGateway{
 		client:       client,
 		sm:           socketmodeClient,
 		worker:       w,
 		streamWorker: sw,
 		stateMgr:     stateMgr,
+		hitlHandler:  hitlHandler,
 	}
 }
 
@@ -78,6 +81,19 @@ func (g *SlackGateway) handleInteractiveCallback(evt socketmode.Event) {
 	var callback slack.InteractionCallback
 	if err := json.Unmarshal(evt.Data.([]byte), &callback); err != nil {
 		log.Printf("Failed to parse interaction callback: %v", err)
+		return
+	}
+
+	// Handle view submissions (modal).
+	if callback.Type == slack.InteractionTypeViewSubmission {
+		if g.hitlHandler != nil {
+			g.hitlHandler.HandleViewSubmission(callback)
+		}
+		return
+	}
+
+	// Try HITL handler first for block actions.
+	if g.hitlHandler != nil && g.hitlHandler.HandleAction(callback) {
 		return
 	}
 
@@ -220,6 +236,19 @@ func (g *SlackGateway) handleMentionStream(event *slackevents.AppMentionEvent) {
 					Status: "running",
 				}); err != nil {
 					log.Printf("Failed to update task state: %v", err)
+				}
+			}
+		case protocol.EventTypePaused:
+			g.updateMessage(ts, blocks)
+			// Mark task as paused in state manager.
+			if evt.Payload != nil && evt.Payload.TaskID != "" && g.stateMgr != nil {
+				if err := g.stateMgr.Set(statemgr.TaskRecord{
+					TaskID:    evt.Payload.TaskID,
+					ChannelID: ts.channelID,
+					SlackTS:   ts.ts,
+					Status:    "paused",
+				}); err != nil {
+					log.Printf("Failed to set task paused state: %v", err)
 				}
 			}
 		case protocol.EventTypeDone:
