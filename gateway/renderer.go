@@ -29,6 +29,8 @@ func BuildTaskCard(event *protocol.SlackEvent, taskData *TaskData) []slack.Block
 		blocks = buildDoneBlocks(event, taskData)
 	case protocol.EventTypeError:
 		blocks = buildErrorBlocks(event, taskData)
+	case protocol.EventTypeToolCall:
+		blocks = buildToolCallBlocks(event, taskData)
 	}
 
 	return blocks
@@ -101,6 +103,11 @@ func buildProgressBlocks(event *protocol.SlackEvent, taskData *TaskData) []slack
 			slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("*Action:* %s", action), false, false),
 			nil, nil,
 		),
+	}
+
+	// Append tool call card if present
+	if p.Tool != nil {
+		blocks = append(blocks, buildToolCallBlocks(event, taskData)...)
 	}
 
 	// Metadata footer
@@ -189,6 +196,9 @@ func buildDoneBlocks(event *protocol.SlackEvent, taskData *TaskData) []slack.Blo
 		)))
 	}
 
+	// Action buttons: Copy Code, Retry, New Task
+	blocks = append(blocks, buildActionButtons(event)...)
+
 	return blocks
 }
 
@@ -225,7 +235,66 @@ func buildErrorBlocks(event *protocol.SlackEvent, taskData *TaskData) []slack.Bl
 		)))
 	}
 
+	// Retry button
+	blocks = append(blocks, buildErrorActionButtons(event)...)
+
 	return blocks
+}
+
+// buildToolCallBlocks creates Block Kit blocks for a tool call event.
+func buildToolCallBlocks(event *protocol.SlackEvent, _ *TaskData) []slack.Block {
+	p := event.Payload
+	if p == nil || p.Tool == nil {
+		return nil
+	}
+
+	tool := p.Tool
+	toolText := fmt.Sprintf("🔧 *%s*", tool.Name)
+	if tool.Args != "" {
+		toolText += fmt.Sprintf("\n*Args:* ```%s```", tool.Args)
+	}
+	if tool.Result != "" {
+		toolText += fmt.Sprintf("\n*Result:* ```%s```", tool.Result)
+	}
+
+	return []slack.Block{
+		slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType, toolText, false, false),
+			nil, nil,
+		),
+	}
+}
+
+// buildActionButtons creates action buttons for the Done state.
+func buildActionButtons(event *protocol.SlackEvent) []slack.Block {
+	elements := []slack.BlockElement{
+		slack.NewButtonBlockElement("copy_code", "", slack.NewTextBlockObject(
+			slack.PlainTextType, "📋 Copy Code", false, false,
+		)),
+		slack.NewButtonBlockElement("retry_task", "", slack.NewTextBlockObject(
+			slack.PlainTextType, "🔄 Retry", false, false,
+		)).WithStyle(slack.StylePrimary),
+		slack.NewButtonBlockElement("new_task", "", slack.NewTextBlockObject(
+			slack.PlainTextType, "📝 New Task", false, false,
+		)),
+	}
+
+	return []slack.Block{
+		slack.NewActionBlock("done_actions", elements...),
+	}
+}
+
+// buildErrorActionButtons creates a Retry button for the Error state.
+func buildErrorActionButtons(event *protocol.SlackEvent) []slack.Block {
+	elements := []slack.BlockElement{
+		slack.NewButtonBlockElement("retry_task", "", slack.NewTextBlockObject(
+			slack.PlainTextType, "🔄 Retry", false, false,
+		)).WithStyle(slack.StyleDanger),
+	}
+
+	return []slack.Block{
+		slack.NewActionBlock("error_actions", elements...),
+	}
 }
 
 // renderProgressBar creates a text-based progress bar.

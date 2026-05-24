@@ -20,6 +20,7 @@ const (
 	EventTypeProgress SlackEventType = "progress"
 	EventTypeDone     SlackEventType = "done"
 	EventTypeError    SlackEventType = "error"
+	EventTypeToolCall SlackEventType = "tool_call" // NEW
 )
 
 // SlackEvent represents a single line in a JSONL streaming output from the Python worker.
@@ -47,10 +48,31 @@ type EventPayload struct {
 	Output string `json:"output,omitempty"`
 	Code   string `json:"code,omitempty"`
 
+	// Tool call
+	Tool *ToolInfo `json:"tool,omitempty"`
+
+	// Action buttons
+	Actions []ButtonAction `json:"actions,omitempty"`
+
 	// Metadata
 	Tokens     int    `json:"tokens,omitempty"`
 	ElapsedTime string `json:"elapsed_time,omitempty"`
 
 	// Error
 	Message string `json:"message,omitempty"`
+}
+
+// ToolInfo describes a tool/function call made by the agent.
+type ToolInfo struct {
+	Name   string `json:"name"`
+	Args   string `json:"args"`
+	Result string `json:"result,omitempty"`
+}
+
+// ButtonAction represents an interactive button in Block Kit.
+type ButtonAction struct {
+	Text  string `json:"text"`
+	Value string `json:"value"`
+	Style string `json:"style"` // primary, danger, or empty
+	Type  string `json:"type"`  // always "button"
 }

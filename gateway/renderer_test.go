@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/agentfactory/gateway/protocol"
@@ -263,5 +264,211 @@ func TestRenderProgressBar(t *testing.T) {
 				t.Errorf("progressBar(%.2f) = %q, want %q", tt.progress, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestBuildTaskCard_ToolCall(t *testing.T) {
+	event := &protocol.SlackEvent{
+		Type: protocol.EventTypeToolCall,
+		Payload: &protocol.EventPayload{
+			Tool: &protocol.ToolInfo{
+				Name: "web_search",
+				Args: `{"query": "latest Go version"}`,
+			},
+		},
+	}
+
+	blocks := BuildTaskCard(event, nil)
+	if blocks == nil {
+		t.Fatal("expected non-nil blocks for tool_call event")
+	}
+
+	// Expect 1 block: Section with tool info
+	if len(blocks) != 1 {
+		t.Errorf("expected 1 block, got %d", len(blocks))
+	}
+
+	section, ok := blocks[0].(*slack.SectionBlock)
+	if !ok {
+		t.Fatal("first block should be SectionBlock")
+	}
+	if !strings.Contains(section.Text.Text, "🔧") {
+		t.Errorf("expected tool icon in text, got: %s", section.Text.Text)
+	}
+	if !strings.Contains(section.Text.Text, "web_search") {
+		t.Errorf("expected tool name in text, got: %s", section.Text.Text)
+	}
+	if !strings.Contains(section.Text.Text, "latest Go version") {
+		t.Errorf("expected args in text, got: %s", section.Text.Text)
+	}
+}
+
+func TestBuildTaskCard_ToolCall_WithResult(t *testing.T) {
+	event := &protocol.SlackEvent{
+		Type: protocol.EventTypeToolCall,
+		Payload: &protocol.EventPayload{
+			Tool: &protocol.ToolInfo{
+				Name:   "code_exec",
+				Args:   `{"code": "print(42)"}`,
+				Result: "42",
+			},
+		},
+	}
+
+	blocks := BuildTaskCard(event, nil)
+	if blocks == nil {
+		t.Fatal("expected non-nil blocks")
+	}
+
+	section, ok := blocks[0].(*slack.SectionBlock)
+	if !ok {
+		t.Fatal("first block should be SectionBlock")
+	}
+	if !strings.Contains(section.Text.Text, "*Result:*") {
+		t.Errorf("expected result in text, got: %s", section.Text.Text)
+	}
+}
+
+func TestBuildTaskCard_Progress_WithTool(t *testing.T) {
+	event := &protocol.SlackEvent{
+		Type: protocol.EventTypeProgress,
+		Payload: &protocol.EventPayload{
+			Progress: 0.5,
+			Action:   "Running tools",
+			Tool: &protocol.ToolInfo{
+				Name: "file_read",
+				Args: `{"path": "main.go"}`,
+			},
+		},
+	}
+
+	blocks := BuildTaskCard(event, nil)
+	if blocks == nil {
+		t.Fatal("expected non-nil blocks")
+	}
+
+	// Expect: Header, progress bar, action, tool call section
+	if len(blocks) < 4 {
+		t.Fatalf("expected at least 4 blocks, got %d", len(blocks))
+	}
+
+	// Find the tool call section
+	foundTool := false
+	for _, b := range blocks {
+		if section, ok := b.(*slack.SectionBlock); ok {
+			if strings.Contains(section.Text.Text, "🔧") && strings.Contains(section.Text.Text, "file_read") {
+				foundTool = true
+				break
+			}
+		}
+	}
+	if !foundTool {
+		t.Error("expected tool call section in progress blocks")
+	}
+}
+
+func TestBuildTaskCard_Done_WithActionButtons(t *testing.T) {
+	event := &protocol.SlackEvent{
+		Type: protocol.EventTypeDone,
+		Payload: &protocol.EventPayload{
+			Output: "**Done**",
+			Code:   "fmt.Println(\"hello\")",
+		},
+	}
+
+	blocks := BuildTaskCard(event, nil)
+	if blocks == nil {
+		t.Fatal("expected non-nil blocks")
+	}
+
+	// Find the action block
+	foundActions := false
+	for _, b := range blocks {
+		actionBlock, ok := b.(*slack.ActionBlock)
+		if ok && actionBlock.BlockID == "done_actions" {
+			foundActions = true
+			elements := actionBlock.Elements.ElementSet
+			if len(elements) != 3 {
+				t.Errorf("expected 3 action buttons, got %d", len(elements))
+			}
+
+			// Check button texts
+			btn0 := elements[0].(*slack.ButtonBlockElement)
+			if btn0.Text.Text != "📋 Copy Code" {
+				t.Errorf("expected '📋 Copy Code', got %s", btn0.Text.Text)
+			}
+
+			btn1 := elements[1].(*slack.ButtonBlockElement)
+			if btn1.Text.Text != "🔄 Retry" {
+				t.Errorf("expected '🔄 Retry', got %s", btn1.Text.Text)
+			}
+			if btn1.Style != slack.StylePrimary {
+				t.Errorf("expected primary style for Retry, got %s", btn1.Style)
+			}
+
+			btn2 := elements[2].(*slack.ButtonBlockElement)
+			if btn2.Text.Text != "📝 New Task" {
+				t.Errorf("expected '📝 New Task', got %s", btn2.Text.Text)
+			}
+			break
+		}
+	}
+	if !foundActions {
+		t.Error("expected action block with buttons in done state")
+	}
+}
+
+func TestBuildTaskCard_Error_WithRetryButton(t *testing.T) {
+	event := &protocol.SlackEvent{
+		Type: protocol.EventTypeError,
+		Payload: &protocol.EventPayload{
+			Message: "timeout",
+		},
+	}
+
+	blocks := BuildTaskCard(event, nil)
+	if blocks == nil {
+		t.Fatal("expected non-nil blocks")
+	}
+
+	// Find the action block
+	foundRetry := false
+	for _, b := range blocks {
+		actionBlock, ok := b.(*slack.ActionBlock)
+		if ok && actionBlock.BlockID == "error_actions" {
+			foundRetry = true
+			elements := actionBlock.Elements.ElementSet
+			if len(elements) != 1 {
+				t.Errorf("expected 1 action button, got %d", len(elements))
+			}
+
+			btn := elements[0].(*slack.ButtonBlockElement)
+			if btn.Text.Text != "🔄 Retry" {
+				t.Errorf("expected '🔄 Retry', got %s", btn.Text.Text)
+			}
+			if btn.Style != slack.StyleDanger {
+				t.Errorf("expected danger style for Retry in error state, got %s", btn.Style)
+			}
+			if btn.ActionID != "retry_task" {
+				t.Errorf("expected action_id 'retry_task', got %s", btn.ActionID)
+			}
+			break
+		}
+	}
+	if !foundRetry {
+		t.Error("expected retry action block in error state")
+	}
+}
+
+func TestBuildTaskCard_ToolCall_NilTool(t *testing.T) {
+	event := &protocol.SlackEvent{
+		Type:    protocol.EventTypeToolCall,
+		Payload: &protocol.EventPayload{},
+	}
+
+	blocks := BuildTaskCard(event, nil)
+	// Nil tool should produce nil/empty blocks from buildToolCallBlocks
+	if blocks != nil && len(blocks) > 0 {
+		t.Errorf("expected nil or empty blocks for nil tool, got %d", len(blocks))
 	}
 }

@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 
 	"github.com/agentfactory/gateway/protocol"
@@ -39,6 +41,8 @@ func (g *SlackGateway) Start(ctx context.Context) error {
 			switch evt.Type {
 			case socketmode.EventTypeEventsAPI:
 				g.handleEvent(evt)
+			case socketmode.EventTypeInteractive:
+				g.handleInteractiveCallback(evt)
 			case socketmode.EventTypeConnecting:
 				log.Println("Connecting to Slack with Socket Mode...")
 			case socketmode.EventTypeConnectionError:
@@ -66,6 +70,87 @@ func (g *SlackGateway) handleEvent(evt socketmode.Event) {
 	if mentionEvent, ok := eventsAPI.InnerEvent.Data.(*slackevents.AppMentionEvent); ok {
 		g.handleMentionStream(mentionEvent)
 	}
+}
+
+func (g *SlackGateway) handleInteractiveCallback(evt socketmode.Event) {
+	g.sm.Ack(*evt.Request)
+
+	var callback slack.InteractionCallback
+	if err := json.Unmarshal(evt.Data.([]byte), &callback); err != nil {
+		log.Printf("Failed to parse interaction callback: %v", err)
+		return
+	}
+
+	if len(callback.ActionCallback.BlockActions) == 0 {
+		return
+	}
+
+	action := callback.ActionCallback.BlockActions[0]
+	log.Printf("Interactive callback: action=%s user=%s channel=%s", action.Value, callback.User.ID, callback.Channel.ID)
+
+	switch action.Value {
+	case "stop_task":
+		g.handleStopTask(callback)
+	case "retry_task":
+		g.handleRetryTask(callback)
+	case "copy_code":
+		// No-op: client-side handles this via Slack's native copy.
+		log.Println("copy_code action acknowledged (client-side handled)")
+	}
+}
+
+func (g *SlackGateway) handleStopTask(callback slack.InteractionCallback) {
+	if g.stateMgr == nil {
+		log.Println("stop_task: stateMgr is nil, skipping")
+		g.reply(callback.Channel.ID, "Task stop requested, but state manager is unavailable.")
+		return
+	}
+
+	// Find the running task for this channel.
+	active := g.stateMgr.ListActive()
+	for _, rec := range active {
+		if rec.ChannelID == callback.Channel.ID {
+			if err := g.stateMgr.Set(statemgr.TaskRecord{
+				TaskID: rec.TaskID,
+				Status: "stopped",
+			}); err != nil {
+				log.Printf("Failed to mark task as stopped: %v", err)
+				g.reply(callback.Channel.ID, "Failed to stop the task.")
+				return
+			}
+			g.reply(callback.Channel.ID, fmt.Sprintf("Task %s has been stopped.", rec.TaskID))
+			return
+		}
+	}
+
+	g.reply(callback.Channel.ID, "No active task found to stop.")
+}
+
+func (g *SlackGateway) handleRetryTask(callback slack.InteractionCallback) {
+	if g.stateMgr == nil {
+		log.Println("retry_task: stateMgr is nil, skipping")
+		g.reply(callback.Channel.ID, "Task retry requested, but state manager is unavailable.")
+		return
+	}
+
+	// Find the last task for this channel to get its original input.
+	// We look for any record (done, error, stopped) for this channel.
+	active := g.stateMgr.ListActive()
+	for _, rec := range active {
+		if rec.ChannelID == callback.Channel.ID {
+			// Re-run the same task by creating a synthetic mention event.
+			mentionEvent := &slackevents.AppMentionEvent{
+				User:      callback.User.ID,
+				Text:      "<@BOT_ID> retry last task",
+				Channel:   callback.Channel.ID,
+				TimeStamp: callback.MessageTs,
+			}
+			g.handleMentionStream(mentionEvent)
+			return
+		}
+	}
+
+	g.reply(callback.Channel.ID, "No task found to retry.")
 }
 
 // taskState holds the Slack message reference for an ongoing streaming task.
