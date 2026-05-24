@@ -700,3 +700,195 @@ func TestBuildTaskCard_CompactSummary(t *testing.T) {
 		t.Errorf("expected <50 blocks, got %d", len(blocks))
 	}
 }
+
+func TestBuildTaskCard_Paused_Devops(t *testing.T) {
+	event := &protocol.SlackEvent{
+		Type: protocol.EventTypePaused,
+		Payload: &protocol.EventPayload{
+			TaskID:    "test-task-123",
+			ChannelID: "C123456",
+			Model:     "gpt-4",
+			ChainContext: &protocol.ChainContext{
+				PausedStep:       "devops",
+				GitStatusSummary: "On branch main\nYour branch is ahead of 'origin/main' by 2 commits.\nChanges to be committed:\n  modified: main.go",
+			},
+		},
+	}
+
+	blocks := BuildTaskCard(event, nil)
+	if blocks == nil {
+		t.Fatal("expected non-nil blocks for devops paused event")
+	}
+
+	// Check header
+	header, ok := blocks[0].(*slack.HeaderBlock)
+	if !ok {
+		t.Fatal("first block should be HeaderBlock")
+	}
+	if header.Text.Text != "🚀 DevOps Ready" {
+		t.Errorf("unexpected header text: %s", header.Text.Text)
+	}
+
+	// Check that git status summary is present
+	foundGitStatus := false
+	for _, b := range blocks {
+		if section, ok := b.(*slack.SectionBlock); ok {
+			if strings.Contains(section.Text.Text, "Git Status:") && strings.Contains(section.Text.Text, "main.go") {
+				foundGitStatus = true
+				break
+			}
+		}
+	}
+	if !foundGitStatus {
+		t.Error("expected git status summary in blocks")
+	}
+
+	// Check action buttons
+	foundGitActions := false
+	for _, b := range blocks {
+		actionBlock, ok := b.(*slack.ActionBlock)
+		if ok && actionBlock.BlockID == "git_review_actions" {
+			foundGitActions = true
+			elements := actionBlock.Elements.ElementSet
+			if len(elements) != 3 {
+				t.Errorf("expected 3 action buttons, got %d", len(elements))
+			}
+
+			// Check button texts
+			btn0 := elements[0].(*slack.ButtonBlockElement)
+			if btn0.Text.Text != "🚀 Push & PR" {
+				t.Errorf("expected '🚀 Push & PR', got %s", btn0.Text.Text)
+			}
+			if btn0.Style != slack.StylePrimary {
+				t.Errorf("expected primary style for Push & PR, got %s", btn0.Style)
+			}
+			if btn0.ActionID != "git_push" {
+				t.Errorf("expected action_id 'git_push', got %s", btn0.ActionID)
+			}
+
+			btn1 := elements[1].(*slack.ButtonBlockElement)
+			if btn1.Text.Text != "🔄 Rebase & Push" {
+				t.Errorf("expected '🔄 Rebase & Push', got %s", btn1.Text.Text)
+			}
+			if btn1.Style != slack.StyleDanger {
+				t.Errorf("expected danger style for Rebase & Push, got %s", btn1.Style)
+			}
+			if btn1.ActionID != "git_rebase" {
+				t.Errorf("expected action_id 'git_rebase', got %s", btn1.ActionID)
+			}
+
+			btn2 := elements[2].(*slack.ButtonBlockElement)
+			if btn2.Text.Text != "📝 Manual" {
+				t.Errorf("expected '📝 Manual', got %s", btn2.Text.Text)
+			}
+			if btn2.ActionID != "git_manual" {
+				t.Errorf("expected action_id 'git_manual', got %s", btn2.ActionID)
+			}
+			break
+		}
+	}
+	if !foundGitActions {
+		t.Error("expected git_review_actions block with buttons")
+	}
+}
+
+func TestBuildTaskCard_Paused_Devops_NoSummary(t *testing.T) {
+	event := &protocol.SlackEvent{
+		Type: protocol.EventTypePaused,
+		Payload: &protocol.EventPayload{
+			TaskID:    "test-task-456",
+			ChannelID: "C789012",
+			ChainContext: &protocol.ChainContext{
+				PausedStep: "devops",
+			},
+		},
+	}
+
+	blocks := BuildTaskCard(event, nil)
+	if blocks == nil {
+		t.Fatal("expected non-nil blocks for devops paused event without summary")
+	}
+
+	// Check header shows pre-flight warning
+	header, ok := blocks[0].(*slack.HeaderBlock)
+	if !ok {
+		t.Fatal("first block should be HeaderBlock")
+	}
+	if header.Text.Text != "⚠️ Git Pre-flight" {
+		t.Errorf("unexpected header text for empty summary: %s", header.Text.Text)
+	}
+
+	// Verify git status section is NOT present
+	for _, b := range blocks {
+		if section, ok := b.(*slack.SectionBlock); ok {
+			if strings.Contains(section.Text.Text, "Git Status:") {
+				t.Error("should not have Git Status section when summary is empty")
+			}
+		}
+	}
+}
+
+func TestBuildTaskCard_Paused_Architect(t *testing.T) {
+	// Verify non-devops paused steps still use the standard review card.
+	event := &protocol.SlackEvent{
+		Type: protocol.EventTypePaused,
+		Payload: &protocol.EventPayload{
+			TaskID:    "test-task-789",
+			ChannelID: "C345678",
+			ChainContext: &protocol.ChainContext{
+				PausedStep:       "architect",
+				DesignDoc:        "Design: Create REST API",
+				FeedbackRequired: true,
+			},
+		},
+	}
+
+	blocks := BuildTaskCard(event, nil)
+	if blocks == nil {
+		t.Fatal("expected non-nil blocks for architect paused event")
+	}
+
+	// Check header
+	header, ok := blocks[0].(*slack.HeaderBlock)
+	if !ok {
+		t.Fatal("first block should be HeaderBlock")
+	}
+	if !strings.Contains(header.Text.Text, "Architect Design") {
+		t.Errorf("expected 'Architect Design' in header, got: %s", header.Text.Text)
+	}
+
+	// Check design doc is present
+	foundDesign := false
+	for _, b := range blocks {
+		if section, ok := b.(*slack.SectionBlock); ok {
+			if strings.Contains(section.Text.Text, "Design Summary:") {
+				foundDesign = true
+				break
+			}
+		}
+	}
+	if !foundDesign {
+		t.Error("expected design summary in blocks")
+	}
+
+	// Verify it uses standard HITL buttons, not git buttons
+	foundHitlActions := false
+	foundGitActions := false
+	for _, b := range blocks {
+		actionBlock, ok := b.(*slack.ActionBlock)
+		if ok {
+			if actionBlock.BlockID == "hitl_actions" {
+				foundHitlActions = true
+			}
+			if actionBlock.BlockID == "git_review_actions" {
+				foundGitActions = true
+			}
+		}
+	}
+	if !foundHitlActions {
+		t.Error("expected hitl_actions block for architect step")
+	}
+	if foundGitActions {
+		t.Error("should not have git_review_actions for architect step")
+	}
+}

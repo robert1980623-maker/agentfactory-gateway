@@ -17,9 +17,11 @@ import (
 type HITLDecision string
 
 const (
-	DecisionApprove  HITLDecision = "APPROVE"
-	DecisionReject   HITLDecision = "REJECT"
-	DecisionFeedback HITLDecision = "FEEDBACK"
+	DecisionApprove       HITLDecision = "APPROVE"
+	DecisionReject        HITLDecision = "REJECT"
+	DecisionFeedback      HITLDecision = "FEEDBACK"
+	DecisionApprovePush   HITLDecision = "APPROVE_PUSH"
+	DecisionApproveRebase HITLDecision = "APPROVE_REBASE"
 )
 
 // ResumePayload is sent to the Python Core to resume a paused task.
@@ -66,6 +68,15 @@ func (h *HITLHandler) HandleAction(callback slack.InteractionCallback) bool {
 	case "hitl_feedback":
 		h.handleFeedback(callback)
 		return true
+	case "git_push":
+		h.handleGitPush(callback)
+		return true
+	case "git_rebase":
+		h.handleGitRebase(callback)
+		return true
+	case "git_manual":
+		h.handleGitManual(callback)
+		return true
 	}
 
 	return false
@@ -107,6 +118,15 @@ func (h *HITLHandler) HandleViewSubmission(callback slack.InteractionCallback) {
 	case "request_changes":
 		decision = DecisionReject
 	case "feedback":
+		decision = DecisionFeedback
+	case "rebase_confirm":
+		// Only resume if user typed YES.
+		if strings.ToUpper(strings.TrimSpace(feedbackText)) != "YES" {
+			log.Printf("HITL: rebase cancelled by user task=%s", taskID)
+			return
+		}
+		decision = DecisionApproveRebase
+	case "manual_commands":
 		decision = DecisionFeedback
 	default:
 		decision = DecisionFeedback
@@ -293,6 +313,9 @@ func (h *HITLHandler) updateMessageToState(channelID, ts, state string) {
 	case "approved":
 		headerText = "✅ Approved"
 		bodyText = "You approved this step. The agent is resuming..."
+	case "push_initiated":
+		headerText = "🚀 Push Initiated"
+		bodyText = "Push & PR command sent. The agent is executing..."
 	default:
 		headerText = "⏸️ Awaiting Response"
 		bodyText = "Action recorded."
@@ -322,5 +345,165 @@ func (h *HITLHandler) reply(channel, text string) {
 	_, _, err := h.client.PostMessage(channel, slack.MsgOptionText(text, false))
 	if err != nil {
 		log.Printf("HITL: failed to reply: %v", err)
+	}
+}
+
+// handleGitPush sends an APPROVE_PUSH resume to the Python Core.
+func (h *HITLHandler) handleGitPush(callback slack.InteractionCallback) {
+	taskID, channelID := parseValuePayload(callback.ActionCallback.BlockActions[0].Value)
+	if channelID == "" {
+		channelID = callback.Channel.ID
+	}
+
+	log.Printf("HITL: git_push task=%s channel=%s user=%s", taskID, channelID, callback.User.ID)
+
+	// Update Slack message to show push initiated state.
+	h.updateMessageToState(channelID, callback.MessageTs, "push_initiated")
+
+	// Send resume command to Python Core.
+	if err := h.sendResume(taskID, DecisionApprovePush, ""); err != nil {
+		log.Printf("HITL: failed to send git_push resume for task %s: %v", taskID, err)
+		h.reply(channelID, fmt.Sprintf("⚠️ Failed to send push command: %v", err))
+	}
+
+	// Update state manager.
+	if h.stateMgr != nil && taskID != "" {
+		if err := h.stateMgr.Set(statemgr.TaskRecord{
+			TaskID: taskID,
+			Status: "resuming",
+		}); err != nil {
+			log.Printf("HITL: failed to update state for task %s: %v", taskID, err)
+		}
+	}
+}
+
+// handleGitRebase opens a confirmation modal before sending APPROVE_REBASE.
+func (h *HITLHandler) handleGitRebase(callback slack.InteractionCallback) {
+	taskID, _ := parseValuePayload(callback.ActionCallback.BlockActions[0].Value)
+
+	log.Printf("HITL: git_rebase task=%s channel=%s user=%s", taskID, callback.Channel.ID, callback.User.ID)
+
+	// Open a confirmation modal for rebase.
+	h.openRebaseConfirmModal(callback)
+}
+
+// handleGitManual opens a modal for the user to enter manual git commands.
+func (h *HITLHandler) handleGitManual(callback slack.InteractionCallback) {
+	taskID, _ := parseValuePayload(callback.ActionCallback.BlockActions[0].Value)
+
+	log.Printf("HITL: git_manual task=%s channel=%s user=%s", taskID, callback.Channel.ID, callback.User.ID)
+
+	h.openManualCommandsModal(callback)
+}
+
+// openRebaseConfirmModal pushes a modal to confirm rebase & push.
+func (h *HITLHandler) openRebaseConfirmModal(callback slack.InteractionCallback) {
+	taskID, _ := parseValuePayload(callback.ActionCallback.BlockActions[0].Value)
+
+	blocks := slack.Blocks{
+		BlockSet: []slack.Block{
+			slack.NewSectionBlock(
+				slack.NewTextBlockObject(slack.MarkdownType,
+					"⚠️ *Rebase & Push*\n\nThis will rebase your current branch onto the target branch and then push. This may rewrite history.", false, false),
+				nil, nil,
+			),
+			slack.NewInputBlock("rebase_confirm_input",
+				slack.NewTextBlockObject(slack.PlainTextType, "Confirm (type YES to proceed)", false, false),
+				slack.NewTextBlockObject(slack.PlainTextType,
+					"Type YES to confirm rebase & push", false, false),
+				slack.NewPlainTextInputBlockElement(
+					slack.NewTextBlockObject(slack.PlainTextType,
+						"Type YES to confirm", false, false),
+					"rebase_confirm_text",
+				),
+			),
+		},
+	}
+
+	privateData := map[string]string{
+		"task_id": taskID,
+		"mode":    "rebase_confirm",
+		"user_id": callback.User.ID,
+	}
+	privateJSON, _ := json.Marshal(privateData)
+
+	view := slack.ModalViewRequest{
+		Type: slack.VTModal,
+		Title: &slack.TextBlockObject{
+			Type: slack.PlainTextType,
+			Text: "Confirm Rebase & Push",
+		},
+		Submit: &slack.TextBlockObject{
+			Type: slack.PlainTextType,
+			Text: "Confirm",
+		},
+		Close: &slack.TextBlockObject{
+			Type: slack.PlainTextType,
+			Text: "Cancel",
+		},
+		Blocks:          blocks,
+		PrivateMetadata: string(privateJSON),
+	}
+
+	_, err := h.client.OpenView(callback.TriggerID, view)
+	if err != nil {
+		log.Printf("HITL: failed to open rebase confirm modal: %v", err)
+		h.reply(callback.Channel.ID, "⚠️ Failed to open confirmation dialog. Please try again.")
+	}
+}
+
+// openManualCommandsModal pushes a modal for entering manual git commands.
+func (h *HITLHandler) openManualCommandsModal(callback slack.InteractionCallback) {
+	taskID, _ := parseValuePayload(callback.ActionCallback.BlockActions[0].Value)
+
+	blocks := slack.Blocks{
+		BlockSet: []slack.Block{
+			slack.NewSectionBlock(
+				slack.NewTextBlockObject(slack.MarkdownType,
+					"📝 *Manual Git Commands*\n\nEnter the git commands you want to execute (one per line).", false, false),
+				nil, nil,
+			),
+			slack.NewInputBlock("manual_commands_input",
+				slack.NewTextBlockObject(slack.PlainTextType, "Commands", false, false),
+				slack.NewTextBlockObject(slack.PlainTextType,
+					"Enter git commands, one per line (e.g., git checkout main)", false, false),
+				slack.NewPlainTextInputBlockElement(
+					slack.NewTextBlockObject(slack.PlainTextType,
+						"git checkout main\ngit merge feature-branch", false, false),
+					"manual_commands_text",
+				).WithMultiline(true),
+			),
+		},
+	}
+
+	privateData := map[string]string{
+		"task_id": taskID,
+		"mode":    "manual_commands",
+		"user_id": callback.User.ID,
+	}
+	privateJSON, _ := json.Marshal(privateData)
+
+	view := slack.ModalViewRequest{
+		Type: slack.VTModal,
+		Title: &slack.TextBlockObject{
+			Type: slack.PlainTextType,
+			Text: "Manual Git Commands",
+		},
+		Submit: &slack.TextBlockObject{
+			Type: slack.PlainTextType,
+			Text: "Execute",
+		},
+		Close: &slack.TextBlockObject{
+			Type: slack.PlainTextType,
+			Text: "Cancel",
+		},
+		Blocks:          blocks,
+		PrivateMetadata: string(privateJSON),
+	}
+
+	_, err := h.client.OpenView(callback.TriggerID, view)
+	if err != nil {
+		log.Printf("HITL: failed to open manual commands modal: %v", err)
+		h.reply(callback.Channel.ID, "⚠️ Failed to open dialog. Please try again.")
 	}
 }

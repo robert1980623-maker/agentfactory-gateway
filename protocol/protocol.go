@@ -59,10 +59,11 @@ type SubAgentInfo struct {
 // ChainContext carries HITL checkpoint data when the Python Core pauses
 // at a review step (e.g., Architect design review, Developer code review).
 type ChainContext struct {
-	PausedStep      string `json:"paused_step,omitempty"`      // e.g., "architect", "developer"
-	DesignDoc       string `json:"design_doc,omitempty"`       // summary of the design
-	ModificationLog string `json:"modification_log,omitempty"` // content of MODIFICATION_LOG.md
-	FeedbackRequired bool  `json:"feedback_required"`          // true if user must provide feedback
+	PausedStep       string `json:"paused_step,omitempty"`       // e.g., "architect", "developer", "devops"
+	DesignDoc        string `json:"design_doc,omitempty"`        // summary of the design
+	ModificationLog  string `json:"modification_log,omitempty"`  // content of MODIFICATION_LOG.md
+	FeedbackRequired bool   `json:"feedback_required"`           // true if user must provide feedback
+	GitStatusSummary string `json:"git_status_summary,omitempty"` // git status/log summary for devops step
 }
 
 // EventPayload carries the data for a streaming event. Fields vary by type.

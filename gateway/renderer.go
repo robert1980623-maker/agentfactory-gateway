@@ -556,6 +556,8 @@ func stepTitle(step string) (string, string) {
 		return "Reviewer", "🔍"
 	case "planner":
 		return "Planner", "📋"
+	case "devops":
+		return "DevOps", "🚀"
 	default:
 		return step, "⏸️"
 	}
@@ -570,6 +572,12 @@ func buildReviewCard(event *protocol.SlackEvent, taskData *TaskData) []slack.Blo
 	}
 
 	cc := p.ChainContext
+
+	// Devops step gets a special Git Review Card with Push/Rebase buttons.
+	if cc.PausedStep == "devops" {
+		return buildGitReviewCard(event, taskData)
+	}
+
 	title, emoji := stepTitle(cc.PausedStep)
 
 	blocks := []slack.Block{
@@ -706,5 +714,101 @@ func buildHITLActionButtons(event *protocol.SlackEvent) []slack.Block {
 
 	return []slack.Block{
 		slack.NewActionBlock("hitl_actions", elements...),
+	}
+}
+
+// buildGitReviewCard creates a Slack Block Kit card for the DevOps HITL step.
+// It shows git status summary and provides Push/Rebase/Manual action buttons.
+func buildGitReviewCard(event *protocol.SlackEvent, taskData *TaskData) []slack.Block {
+	p := event.Payload
+	if p == nil || p.ChainContext == nil {
+		return buildGenericPauseBlocks(event, taskData)
+	}
+
+	cc := p.ChainContext
+
+	// Determine header based on whether we have git status info.
+	headerText := "🚀 DevOps Ready"
+	if cc.GitStatusSummary == "" {
+		headerText = "⚠️ Git Pre-flight"
+	}
+
+	blocks := []slack.Block{
+		slack.NewHeaderBlock(slack.NewTextBlockObject(
+			slack.PlainTextType, headerText, true, false,
+		)),
+		slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType,
+				"The agent has completed git pre-flight checks. Choose an action below:",
+				false, false),
+			nil, nil,
+		),
+	}
+
+	// Show git status summary in a code block.
+	if cc.GitStatusSummary != "" {
+		summary := cc.GitStatusSummary
+		if len(summary) > 3000 {
+			summary = summary[:3000] + "\n_(truncated)_"
+		}
+		blocks = append(blocks, slack.NewSectionBlock(
+			slack.NewTextBlockObject(slack.MarkdownType,
+				fmt.Sprintf("*Git Status:*\n```%s```", summary), false, false),
+			nil, nil,
+		))
+	}
+
+	blocks = append(blocks, slack.NewDividerBlock())
+
+	// Footer
+	footerParts := []string{}
+	if taskData != nil && taskData.Model != "" {
+		footerParts = append(footerParts, fmt.Sprintf("🤖 %s", taskData.Model))
+	}
+	if p.Model != "" {
+		footerParts = append(footerParts, fmt.Sprintf("🤖 %s", p.Model))
+	}
+	if p.ElapsedTime != "" {
+		footerParts = append(footerParts, fmt.Sprintf("⏱️ %s", p.ElapsedTime))
+	}
+	if len(footerParts) > 0 {
+		footer := strings.Join(footerParts, " | ")
+		blocks = append(blocks, slack.NewContextBlock("", slack.NewTextBlockObject(
+			slack.PlainTextType, footer, false, false,
+		)))
+	}
+
+	blocks = append(blocks, buildGitReviewActionButtons(event)...)
+
+	return blocks
+}
+
+// buildGitReviewActionButtons creates Push & PR / Rebase & Push / Manual buttons.
+func buildGitReviewActionButtons(event *protocol.SlackEvent) []slack.Block {
+	taskID := ""
+	channelID := ""
+	if event.Payload != nil {
+		taskID = event.Payload.TaskID
+		channelID = event.Payload.ChannelID
+	}
+	valuePayload := taskID
+	if channelID != "" {
+		valuePayload = taskID + "|" + channelID
+	}
+
+	elements := []slack.BlockElement{
+		slack.NewButtonBlockElement("git_push", valuePayload, slack.NewTextBlockObject(
+			slack.PlainTextType, "🚀 Push & PR", false, false,
+		)).WithStyle(slack.StylePrimary),
+		slack.NewButtonBlockElement("git_rebase", valuePayload, slack.NewTextBlockObject(
+			slack.PlainTextType, "🔄 Rebase & Push", false, false,
+		)).WithStyle(slack.StyleDanger),
+		slack.NewButtonBlockElement("git_manual", valuePayload, slack.NewTextBlockObject(
+			slack.PlainTextType, "📝 Manual", false, false,
+		)),
+	}
+
+	return []slack.Block{
+		slack.NewActionBlock("git_review_actions", elements...),
 	}
 }
