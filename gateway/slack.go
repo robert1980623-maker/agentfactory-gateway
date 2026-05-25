@@ -215,6 +215,13 @@ type taskState struct {
 func (g *SlackGateway) handleMentionStream(event *slackevents.AppMentionEvent) {
 	log.Printf("App mention (stream): user=%s text=%s channel=%s", event.User, event.Text, event.Channel)
 
+	// Prevent concurrent task execution in the same channel.
+	if g.stateMgr != nil && g.stateMgr.HasActiveTask(event.Channel) {
+		log.Printf("Channel %s already has an active task, rejecting", event.Channel)
+		g.reply(event.Channel, "⏳ A task is already running in this channel. Please wait for it to complete or use /stop.")
+		return
+	}
+
 	req := protocol.TaskRequest{
 		Task: event.Text,
 	}
@@ -258,6 +265,8 @@ func (g *SlackGateway) handleMentionStream(event *slackevents.AppMentionEvent) {
 					TaskID:    evt.Payload.TaskID,
 					ChannelID: ts.channelID,
 					SlackTS:   ts.ts,
+					UserID:    event.User,
+					Prompt:    event.Text,
 					Status:    "running",
 				}); err != nil {
 					log.Printf("Failed to set task state: %v", err)
