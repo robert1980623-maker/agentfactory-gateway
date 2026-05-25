@@ -4,12 +4,17 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"os/exec"
 	"time"
 
 	"github.com/agentfactory/gateway/protocol"
 )
+
+// ErrWorkerStopped is returned when the StreamWorker is stopped mid-execution.
+var ErrWorkerStopped = errors.New("worker stopped")
 
 // StreamCallback is called for each parsed JSONL event from the worker.
 type StreamCallback func(event *protocol.SlackEvent, err error)
@@ -19,6 +24,7 @@ type StreamWorker struct {
 	PythonBin string
 	Script    string
 	ClineBin  string
+	done      chan struct{}
 }
 
 // NewStreamWorker creates a new StreamWorker.
@@ -26,6 +32,7 @@ func NewStreamWorker(pythonBin string) *StreamWorker {
 	return &StreamWorker{
 		PythonBin: pythonBin,
 		Script:    "worker.py",
+		done:      make(chan struct{}),
 	}
 }
 
@@ -33,6 +40,16 @@ func NewStreamWorker(pythonBin string) *StreamWorker {
 func (w *StreamWorker) WithCline(bin string) *StreamWorker {
 	w.ClineBin = bin
 	return w
+}
+
+// Stop signals the StreamWorker to stop processing.
+func (sw *StreamWorker) Stop() {
+	select {
+	case <-sw.done:
+		return // already stopped
+	default:
+		close(sw.done)
+	}
 }
 
 // Execute runs the appropriate worker based on task type and streams events
@@ -80,6 +97,13 @@ func (w *StreamWorker) executePython(req protocol.TaskRequest, cb StreamCallback
 	// Stream stdout line-by-line.
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
+		select {
+		case <-w.done:
+			log.Println("StreamWorker: stopped during execution")
+			return ErrWorkerStopped
+		default:
+		}
+
 		line := scanner.Text()
 		if line == "" {
 			continue

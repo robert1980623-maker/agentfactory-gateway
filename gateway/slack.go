@@ -58,7 +58,43 @@ func (g *SlackGateway) Start(ctx context.Context) error {
 		}
 	}()
 
-	return g.sm.RunContext(ctx)
+	err := g.sm.RunContext(ctx)
+
+	// Context was cancelled — perform graceful drain.
+	g.Stop(context.Background())
+	return err
+}
+
+// Stop gracefully shuts down the gateway, draining active workers and
+// marking interrupted tasks in the state manager.
+func (g *SlackGateway) Stop(ctx context.Context) error {
+	log.Println("Draining active workers...")
+
+	// Drain stream worker.
+	if g.streamWorker != nil {
+		g.streamWorker.Stop()
+	}
+
+	// Drain Python worker.
+	if g.worker != nil {
+		g.worker.Stop()
+	}
+
+	// Mark all running tasks as interrupted.
+	if g.stateMgr != nil {
+		active := g.stateMgr.ListActive()
+		for _, rec := range active {
+			log.Printf("Marking task %s as interrupted", rec.TaskID)
+			if err := g.stateMgr.Set(statemgr.TaskRecord{
+				TaskID: rec.TaskID,
+				Status: "interrupted",
+			}); err != nil {
+				log.Printf("Failed to mark task %s as interrupted: %v", rec.TaskID, err)
+			}
+		}
+	}
+
+	return nil
 }
 
 func (g *SlackGateway) handleEvent(evt socketmode.Event) {

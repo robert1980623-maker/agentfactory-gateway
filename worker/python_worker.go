@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os/exec"
 
 	"github.com/agentfactory/gateway/protocol"
@@ -99,4 +100,12 @@ func (w *PythonWorker) CheckStatus(taskID string) (status string, err error) {
 	}
 
 	return resp.Status, nil
+}
+
+// Stop gracefully stops the PythonWorker. Currently a no-op since
+// PythonWorker runs synchronously, but included for interface compatibility.
+func (w *PythonWorker) Stop() {
+	// Synchronous tasks cannot be interrupted mid-execution.
+	// In a future version, we could implement SIGTERM forwarding.
+	log.Println("PythonWorker.Stop: no-op (sync tasks run to completion)")
 }

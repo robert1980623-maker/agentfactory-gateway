@@ -32,7 +32,7 @@ func main() {
 	}
 	sw := worker.NewStreamWorker(cfg.PythonBin)
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
 	defer cancel()
 
 	// Crash recovery: reconcile any tasks left in "running" state from a previous run.
@@ -44,8 +44,30 @@ func main() {
 
 	g := gateway.NewSlackGateway(cfg.SlackBotToken, cfg.SlackAppToken, w, sw, sm)
 
-	log.Println("Starting AgentFactory Gateway...")
-	if err := g.Start(ctx); err != nil {
-		log.Fatalf("Gateway failed: %v", err)
+	// Run gateway in a goroutine so we can wait for shutdown signal.
+	errCh := make(chan error, 1)
+	go func() {
+		log.Println("Starting AgentFactory Gateway...")
+		errCh <- g.Start(ctx)
+	}()
+
+	// Wait for context cancellation (signal received) or gateway error.
+	select {
+	case <-ctx.Done():
+		log.Println("Shutdown signal received, draining workers...")
+		// Gateway's Start will call Stop() when ctx is cancelled.
+	case err := <-errCh:
+		if err != nil {
+			log.Printf("Gateway exited with error: %v", err)
+		}
+		return
 	}
+
+	// Drain: wait for the gateway goroutine to finish.
+	log.Println("Waiting for gateway to finish shutdown...")
+	if err := <-errCh; err != nil {
+		log.Printf("Gateway shutdown error: %v", err)
+	}
+
+	log.Println("Gateway shut down cleanly.")
 }
