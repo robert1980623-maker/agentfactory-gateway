@@ -23,8 +23,8 @@ type closer interface {
 func main() {
 	cfg := config.Load()
 
-	if cfg.SlackBotToken == "" || cfg.SlackAppToken == "" {
-		log.Fatal("SLACK_BOT_TOKEN and SLACK_APP_TOKEN must be set")
+	if err := cfg.Validate(); err != nil {
+		log.Fatal(err)
 	}
 
 	// Resolve worker script path.

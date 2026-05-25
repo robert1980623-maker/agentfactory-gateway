@@ -7,6 +7,16 @@ import (
 	"strings"
 )
 
+// env_loader loads environment variables from a .env file at startup.
+//
+// Variable priority (highest to lowest):
+//  1. System environment variables (already set in the process environment)
+//  2. Values from the .env file in the working directory
+//  3. Default values defined in config.Load()
+//
+// This init() runs before main(), ensuring .env values are available
+// when config.Load() reads them. Values already set in the system
+// environment are never overwritten by .env.
 func init() {
 	loadEnv()
 }

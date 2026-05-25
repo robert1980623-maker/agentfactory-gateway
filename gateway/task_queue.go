@@ -3,6 +3,7 @@ package gateway
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -74,6 +75,7 @@ func (tq *TaskQueue) Enqueue(task *QueuedTask) (int, error) {
 
 	tq.waiting = append(tq.waiting, task)
 	tq.channels[task.ChannelID]++
+	atomic.AddInt64(&totalTasksEnqueued, 1)
 
 	return tq.positionOf(task.TaskID), nil
 }
@@ -104,6 +106,7 @@ func (tq *TaskQueue) MarkRunning(taskID string) bool {
 
 // MarkDone marks a running task as done and triggers dequeue of the next eligible task.
 func (tq *TaskQueue) MarkDone(taskID string) {
+	atomic.AddInt64(&totalTasksCompleted, 1)
 	tq.mu.Lock()
 	delete(tq.running, taskID)
 	tq.mu.Unlock()
@@ -112,6 +115,7 @@ func (tq *TaskQueue) MarkDone(taskID string) {
 
 // MarkError marks a running task as error and triggers dequeue of the next eligible task.
 func (tq *TaskQueue) MarkError(taskID string) {
+	atomic.AddInt64(&totalTasksCompleted, 1)
 	tq.mu.Lock()
 	delete(tq.running, taskID)
 	tq.mu.Unlock()
@@ -177,6 +181,7 @@ func (tq *TaskQueue) MarkRunningDirect(task *QueuedTask) {
 	}
 	tq.running[task.TaskID] = task
 	tq.channels[task.ChannelID]++
+	atomic.AddInt64(&totalTasksEnqueued, 1)
 }
 
 // FindByChannel finds a running or waiting task for the given channel.

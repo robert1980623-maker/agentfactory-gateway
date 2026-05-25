@@ -86,6 +86,7 @@ func (g *SlackGateway) dispatchQueuedTask(task *QueuedTask) {
 
 	cb := func(evt *protocol.SlackEvent, err error) {
 		if err != nil {
+			atomic.AddInt64(&metricErrors, 1)
 			log.Printf("Stream callback error for queued task %s: %v", task.TaskID, err)
 			g.postError(ts, err.Error())
 			g.taskQueue.MarkError(task.TaskID)
@@ -187,6 +188,7 @@ func (g *SlackGateway) dispatchQueuedTask(task *QueuedTask) {
 	req := protocol.TaskRequest{Task: task.Prompt}
 	if g.streamWorker != nil {
 		if err := g.streamWorker.Execute(req, cb); err != nil {
+			atomic.AddInt64(&metricErrors, 1)
 			log.Printf("Stream worker error for queued task %s: %v", task.TaskID, err)
 			g.postError(ts, err.Error())
 			g.taskQueue.MarkError(task.TaskID)
@@ -321,6 +323,7 @@ func (g *SlackGateway) Stop(ctx context.Context) error {
 }
 
 func (g *SlackGateway) handleEvent(evt socketmode.Event) {
+	atomic.AddInt64(&totalEventsProcessed, 1)
 	log.Printf("[EVENT RECEIVED] Type: %v, Data type: %T", evt.Type, evt.Data)
 
 	eventsAPI, ok := evt.Data.(slackevents.EventsAPIEvent)
@@ -363,6 +366,7 @@ func (g *SlackGateway) handleEvent(evt socketmode.Event) {
 }
 
 func (g *SlackGateway) handleInteractiveCallback(evt socketmode.Event) {
+	atomic.AddInt64(&totalEventsProcessed, 1)
 	g.sm.Ack(*evt.Request)
 
 	var callback slack.InteractionCallback
@@ -503,6 +507,7 @@ func (g *SlackGateway) handleMentionStream(event *slackevents.AppMentionEvent) {
 
 	cb := func(evt *protocol.SlackEvent, err error) {
 		if err != nil {
+			atomic.AddInt64(&metricErrors, 1)
 			log.Printf("Stream callback error: %v", err)
 			g.postError(ts, err.Error())
 			if queuedTask := g.taskQueue.FindByChannel(event.Channel); queuedTask != nil {
@@ -619,6 +624,7 @@ func (g *SlackGateway) handleMentionStream(event *slackevents.AppMentionEvent) {
 		g.taskQueue.MarkRunningDirect(queuedTask)
 		log.Printf("[STREAM] Calling streamWorker.Execute with task=%q", event.Text)
 		if err := g.streamWorker.Execute(req, cb); err != nil {
+			atomic.AddInt64(&metricErrors, 1)
 			log.Printf("Stream worker error: %v", err)
 			g.postError(ts, err.Error())
 			g.taskQueue.MarkError(queuedTask.TaskID)
