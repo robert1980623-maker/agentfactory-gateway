@@ -13,6 +13,8 @@ type TaskRecord struct {
 	TaskID    string    `json:"task_id"`
 	ChannelID string    `json:"channel_id"`
 	SlackTS   string    `json:"slack_ts"`
+	UserID    string    `json:"user_id"`
+	Prompt    string    `json:"prompt"`       // Original user prompt (for retry)
 	Status    string    `json:"status"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -52,6 +54,12 @@ func (sm *StateManager) Set(rec TaskRecord) error {
 		}
 		if rec.SlackTS != "" {
 			existing.SlackTS = rec.SlackTS
+		}
+		if rec.UserID != "" {
+			existing.UserID = rec.UserID
+		}
+		if rec.Prompt != "" {
+			existing.Prompt = rec.Prompt
 		}
 		if rec.Status != "" {
 			existing.Status = rec.Status
@@ -118,7 +126,8 @@ func (sm *StateManager) load() error {
 	return nil
 }
 
-// saveLocked writes state to disk. Caller must hold sm.mu (write lock).
+// saveLocked writes state to disk atomically. Caller must hold sm.mu (write lock).
+// Uses write-to-tmp + rename to prevent corruption on crash during write.
 func (sm *StateManager) saveLocked() error {
 	// Serialize as a flat map for simplicity.
 	flat := make(map[string]TaskRecord, len(sm.records))
@@ -131,5 +140,41 @@ func (sm *StateManager) saveLocked() error {
 		return fmt.Errorf("marshal state: %w", err)
 	}
 
-	return os.WriteFile(sm.filePath, data, 0644)
+	// Atomic write: write to temp file, then rename.
+	tmpPath := sm.filePath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return fmt.Errorf("write temp state: %w", err)
+	}
+	return os.Rename(tmpPath, sm.filePath)
+}
+
+// HasActiveTask returns true if the given channel has a running or paused task.
+// Used to prevent concurrent task execution in the same channel.
+func (sm *StateManager) HasActiveTask(channelID string) bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	for _, rec := range sm.records {
+		if rec.ChannelID == channelID && (rec.Status == "running" || rec.Status == "paused") {
+			return true
+		}
+	}
+	return false
+}
+
+// GetByChannel returns the most recent task record for a given channel,
+// regardless of status. Useful for retry operations.
+func (sm *StateManager) GetByChannel(channelID string) (*TaskRecord, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	var latest *TaskRecord
+	for _, rec := range sm.records {
+		if rec.ChannelID == channelID {
+			if latest == nil || rec.UpdatedAt.After(latest.UpdatedAt) {
+				cpy := *rec
+				latest = &cpy
+			}
+		}
+	}
+	return latest, latest != nil
 }
