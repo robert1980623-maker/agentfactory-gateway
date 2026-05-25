@@ -35,12 +35,12 @@ type ResumePayload struct {
 type HITLHandler struct {
 	worker       *worker.PythonWorker
 	streamWorker *worker.StreamWorker
-	stateMgr     *statemgr.StateManager
+	stateMgr     statemgr.StateManager
 	client       *slack.Client
 }
 
 // NewHITLHandler creates a new HITL interaction handler.
-func NewHITLHandler(w *worker.PythonWorker, sw *worker.StreamWorker, stateMgr *statemgr.StateManager, client *slack.Client) *HITLHandler {
+func NewHITLHandler(w *worker.PythonWorker, sw *worker.StreamWorker, stateMgr statemgr.StateManager, client *slack.Client) *HITLHandler {
 	return &HITLHandler{
 		worker:       w,
 		streamWorker: sw,
@@ -134,9 +134,11 @@ func (h *HITLHandler) HandleViewSubmission(callback slack.InteractionCallback) {
 
 	log.Printf("HITL: modal submit task=%s decision=%s feedback=%q", taskID, decision, feedbackText)
 
-	if err := h.sendResume(taskID, decision, feedbackText); err != nil {
-		log.Printf("HITL: failed to send resume for task %s: %v", taskID, err)
-	}
+	go func() {
+		if err := h.sendResume(taskID, decision, feedbackText); err != nil {
+			log.Printf("HITL: failed to send resume for task %s: %v", taskID, err)
+		}
+	}()
 
 	// Update state manager.
 	if h.stateMgr != nil && taskID != "" {
@@ -170,11 +172,13 @@ func (h *HITLHandler) handleApprove(callback slack.InteractionCallback) {
 	// Update Slack message to show approved state.
 	h.updateMessageToState(channelID, callback.MessageTs, "approved")
 
-	// Send resume command to Python Core.
-	if err := h.sendResume(taskID, DecisionApprove, ""); err != nil {
-		log.Printf("HITL: failed to send resume for task %s: %v", taskID, err)
-		h.reply(channelID, fmt.Sprintf("⚠️ Failed to send approve command: %v", err))
-	}
+	// Send resume command to Python Core (non-blocking to avoid stalling Slack event loop).
+	go func() {
+		if err := h.sendResume(taskID, DecisionApprove, ""); err != nil {
+			log.Printf("HITL: failed to send resume for task %s: %v", taskID, err)
+			h.reply(channelID, fmt.Sprintf("⚠️ Failed to send approve command: %v", err))
+		}
+	}()
 
 	// Update state manager.
 	if h.stateMgr != nil && taskID != "" {
@@ -360,11 +364,13 @@ func (h *HITLHandler) handleGitPush(callback slack.InteractionCallback) {
 	// Update Slack message to show push initiated state.
 	h.updateMessageToState(channelID, callback.MessageTs, "push_initiated")
 
-	// Send resume command to Python Core.
-	if err := h.sendResume(taskID, DecisionApprovePush, ""); err != nil {
-		log.Printf("HITL: failed to send git_push resume for task %s: %v", taskID, err)
-		h.reply(channelID, fmt.Sprintf("⚠️ Failed to send push command: %v", err))
-	}
+	// Send resume command to Python Core (non-blocking to avoid stalling Slack event loop).
+	go func() {
+		if err := h.sendResume(taskID, DecisionApprovePush, ""); err != nil {
+			log.Printf("HITL: failed to send git_push resume for task %s: %v", taskID, err)
+			h.reply(channelID, fmt.Sprintf("⚠️ Failed to send push command: %v", err))
+		}
+	}()
 
 	// Update state manager.
 	if h.stateMgr != nil && taskID != "" {

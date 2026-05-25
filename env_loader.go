@@ -30,7 +30,9 @@ func loadEnv() {
 		if len(parts) == 2 {
 			key := strings.TrimSpace(parts[0])
 			val := strings.TrimSpace(parts[1])
-			os.Setenv(key, val)
+			if _, exists := os.LookupEnv(key); !exists {
+				os.Setenv(key, val)
+			}
 		}
 	}
 	log.Println("Loaded .env file")

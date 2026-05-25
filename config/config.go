@@ -7,6 +7,7 @@ type Config struct {
 	SlackAppToken string
 	PythonBin     string
 	AFCLIBin      string
+	AFWorkDir     string
 }
 
 func Load() Config {
@@ -15,6 +16,7 @@ func Load() Config {
 		SlackAppToken: getEnv("SLACK_APP_TOKEN", ""),
 		PythonBin:     getEnv("PYTHON_BIN", "python3"),
 		AFCLIBin:      getEnv("AF_CLI_BIN", ""),
+		AFWorkDir:     getEnv("AF_WORK_DIR", ""),
 	}
 }
 

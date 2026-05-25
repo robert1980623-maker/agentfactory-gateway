@@ -892,3 +892,44 @@ func TestBuildTaskCard_Paused_Architect(t *testing.T) {
 		t.Error("should not have git_review_actions for architect step")
 	}
 }
+
+func TestBuildQueuedCard(t *testing.T) {
+	blocks := BuildQueuedCard(3, "task-42")
+	if blocks == nil {
+		t.Fatal("expected non-nil blocks")
+	}
+
+	// Check header
+	header, ok := blocks[0].(*slack.HeaderBlock)
+	if !ok {
+		t.Fatal("first block should be HeaderBlock")
+	}
+	if header.Text.Text != "📋 Task Queued" {
+		t.Errorf("unexpected header text: %s", header.Text.Text)
+	}
+
+	// Check position text
+	section, ok := blocks[1].(*slack.SectionBlock)
+	if !ok {
+		t.Fatal("second block should be SectionBlock")
+	}
+	if section.Text.Text != "Position *#3* in queue — your task will start automatically when the current task completes." {
+		t.Errorf("unexpected position text: %s", section.Text.Text)
+	}
+
+	// Check divider
+	_, ok = blocks[2].(*slack.DividerBlock)
+	if !ok {
+		t.Fatal("third block should be DividerBlock")
+	}
+
+	// Check context with task ID
+	ctxBlock, ok := blocks[3].(*slack.ContextBlock)
+	if !ok {
+		t.Fatal("fourth block should be ContextBlock")
+	}
+	ctxText := ctxBlock.ContextElements.Elements[0].(*slack.TextBlockObject).Text
+	if ctxText != "Task ID: task-42" {
+		t.Errorf("unexpected context text: %s", ctxText)
+	}
+}

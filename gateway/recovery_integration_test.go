@@ -14,7 +14,7 @@ import (
 // 3. Verify tasks are marked as "interrupted"
 func TestGracefulShutdown_Integration(t *testing.T) {
 	path := t.TempDir() + "/state.json"
-	sm, err := statemgr.NewStateManager(path)
+	sm, err := statemgr.NewJSONStateManager(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestGracefulShutdown_Integration(t *testing.T) {
 // TestHasActiveTask_Concurrency verifies that concurrent task submission is blocked.
 func TestHasActiveTask_Concurrency(t *testing.T) {
 	path := t.TempDir() + "/state.json"
-	sm, err := statemgr.NewStateManager(path)
+	sm, err := statemgr.NewJSONStateManager(path)
 	if err != nil {
 		t.Fatal(err)
 	}

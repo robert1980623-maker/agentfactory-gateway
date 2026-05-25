@@ -14,3 +14,16 @@ main
 
 # OS
 .DS_Store
+
+# Test/build artifacts
+*.test
+agentfactory-gateway
+gateway/gateway
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Startup scripts
+start.sh

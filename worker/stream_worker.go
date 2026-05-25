@@ -94,6 +94,14 @@ func (w *StreamWorker) executePython(req protocol.TaskRequest, cb StreamCallback
 	})
 	defer throttler.Stop()
 
+	// Drain stderr for logging (non-blocking, started early so stderr is captured during execution).
+	go func() {
+		stderrScanner := bufio.NewScanner(stderr)
+		for stderrScanner.Scan() {
+			log.Printf("worker stderr: %s", stderrScanner.Text())
+		}
+	}()
+
 	// Stream stdout line-by-line.
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
@@ -120,14 +128,6 @@ func (w *StreamWorker) executePython(req protocol.TaskRequest, cb StreamCallback
 	if err := scanner.Err(); err != nil {
 		cb(nil, fmt.Errorf("scan stdout: %w", err))
 	}
-
-	// Drain stderr for logging (non-blocking).
-	go func() {
-		stderrScanner := bufio.NewScanner(stderr)
-		for stderrScanner.Scan() {
-			// stderr lines are logged internally, not sent to callback.
-		}
-	}()
 
 	// Wait for the process to finish.
 	if err := cmd.Wait(); err != nil {
@@ -206,11 +206,11 @@ func (w *StreamWorker) executeCline(req protocol.TaskRequest, cb StreamCallback)
 		})
 	}()
 
-	// Drain stderr (non-blocking).
+	// Drain stderr (non-blocking, with logging for debugging).
 	go func() {
 		stderrScanner := bufio.NewScanner(stderr)
 		for stderrScanner.Scan() {
-			// stderr lines are not sent to callback.
+			log.Printf("cline stderr: %s", stderrScanner.Text())
 		}
 	}()
 

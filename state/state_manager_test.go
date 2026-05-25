@@ -13,9 +13,9 @@ import (
 func TestFullLifecycle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gateway_state.json")
 
-	sm, err := NewStateManager(path)
+	sm, err := NewJSONStateManager(path)
 	if err != nil {
-		t.Fatalf("NewStateManager: %v", err)
+		t.Fatalf("NewJSONStateManager: %v", err)
 	}
 
 	taskID := "task-abc-123"
@@ -104,9 +104,9 @@ func TestFullLifecycle(t *testing.T) {
 
 	// --- Verify persistence ---
 	// Reload from file to confirm durability.
-	sm2, err := NewStateManager(path)
+	sm2, err := NewJSONStateManager(path)
 	if err != nil {
-		t.Fatalf("NewStateManager(reload): %v", err)
+		t.Fatalf("NewJSONStateManager(reload): %v", err)
 	}
 
 	rec2, ok := sm2.Get(taskID)
@@ -138,9 +138,9 @@ func TestFullLifecycle(t *testing.T) {
 func TestFullLifecycleWithError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gateway_state.json")
 
-	sm, err := NewStateManager(path)
+	sm, err := NewJSONStateManager(path)
 	if err != nil {
-		t.Fatalf("NewStateManager: %v", err)
+		t.Fatalf("NewJSONStateManager: %v", err)
 	}
 
 	taskID := "task-err-001"
@@ -188,9 +188,9 @@ func TestFullLifecycleWithError(t *testing.T) {
 // TestHasActiveTask verifies per-channel active task detection.
 func TestHasActiveTask(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gateway_state.json")
-	sm, err := NewStateManager(path)
+	sm, err := NewJSONStateManager(path)
 	if err != nil {
-		t.Fatalf("NewStateManager: %v", err)
+		t.Fatalf("NewJSONStateManager: %v", err)
 	}
 
 	ch1 := "C01CH1"
@@ -232,9 +232,9 @@ func TestHasActiveTask(t *testing.T) {
 // TestGetByChannel verifies retrieving the most recent task for a channel.
 func TestGetByChannel(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gateway_state.json")
-	sm, err := NewStateManager(path)
+	sm, err := NewJSONStateManager(path)
 	if err != nil {
-		t.Fatalf("NewStateManager: %v", err)
+		t.Fatalf("NewJSONStateManager: %v", err)
 	}
 
 	ch := "C01CH"
@@ -280,9 +280,9 @@ func TestGetByChannel(t *testing.T) {
 // TestPromptAndUserFields verifies that Prompt and UserID fields persist through Set/Get/reload.
 func TestPromptAndUserFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gateway_state.json")
-	sm, err := NewStateManager(path)
+	sm, err := NewJSONStateManager(path)
 	if err != nil {
-		t.Fatalf("NewStateManager: %v", err)
+		t.Fatalf("NewJSONStateManager: %v", err)
 	}
 
 	if err := sm.Set(TaskRecord{
@@ -307,7 +307,7 @@ func TestPromptAndUserFields(t *testing.T) {
 	}
 
 	// Reload from disk.
-	sm2, err := NewStateManager(path)
+	sm2, err := NewJSONStateManager(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,9 +326,9 @@ func TestPromptAndUserFields(t *testing.T) {
 // TestAtomicWrite verifies that the state file is never partially written.
 func TestAtomicWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gateway_state.json")
-	sm, err := NewStateManager(path)
+	sm, err := NewJSONStateManager(path)
 	if err != nil {
-		t.Fatalf("NewStateManager: %v", err)
+		t.Fatalf("NewJSONStateManager: %v", err)
 	}
 
 	// Write a task.

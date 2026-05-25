@@ -20,7 +20,7 @@ type TaskRecord struct {
 }
 
 // StateManager persists and manages task gateway state.
-type StateManager struct {
+type JSONStateManager struct {
 	mu       sync.RWMutex
 	records  map[string]*TaskRecord
 	filePath string
@@ -29,8 +29,8 @@ type StateManager struct {
 // NewStateManager creates a StateManager that persists to the given file path.
 // Returns an empty manager if the file doesn't exist. Returns an error if the
 // file exists but contains corrupted data.
-func NewStateManager(filePath string) (*StateManager, error) {
-	sm := &StateManager{
+func NewJSONStateManager(filePath string) (*JSONStateManager, error) {
+	sm := &JSONStateManager{
 		records:  make(map[string]*TaskRecord),
 		filePath: filePath,
 	}
@@ -43,7 +43,7 @@ func NewStateManager(filePath string) (*StateManager, error) {
 // Set creates or updates a task record. If UpdatedAt is zero, it is set to now.
 // For existing records, non-zero fields in the incoming record overwrite stored
 // values; zero fields preserve the existing stored value.
-func (sm *StateManager) Set(rec TaskRecord) error {
+func (sm *JSONStateManager) Set(rec TaskRecord) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -77,7 +77,7 @@ func (sm *StateManager) Set(rec TaskRecord) error {
 }
 
 // Get returns a copy of a task's record, or nil/false if not found.
-func (sm *StateManager) Get(taskID string) (*TaskRecord, bool) {
+func (sm *JSONStateManager) Get(taskID string) (*TaskRecord, bool) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
@@ -92,7 +92,7 @@ func (sm *StateManager) Get(taskID string) (*TaskRecord, bool) {
 }
 
 // ListActive returns all records with status "running".
-func (sm *StateManager) ListActive() []*TaskRecord {
+func (sm *JSONStateManager) ListActive() []*TaskRecord {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
@@ -107,7 +107,7 @@ func (sm *StateManager) ListActive() []*TaskRecord {
 }
 
 // load reads state from disk. The file is stored as a flat map[string]TaskRecord.
-func (sm *StateManager) load() error {
+func (sm *JSONStateManager) load() error {
 	data, err := os.ReadFile(sm.filePath)
 	if err != nil {
 		return err
@@ -128,7 +128,7 @@ func (sm *StateManager) load() error {
 
 // saveLocked writes state to disk atomically. Caller must hold sm.mu (write lock).
 // Uses write-to-tmp + rename to prevent corruption on crash during write.
-func (sm *StateManager) saveLocked() error {
+func (sm *JSONStateManager) saveLocked() error {
 	// Serialize as a flat map for simplicity.
 	flat := make(map[string]TaskRecord, len(sm.records))
 	for k, v := range sm.records {
@@ -150,7 +150,7 @@ func (sm *StateManager) saveLocked() error {
 
 // HasActiveTask returns true if the given channel has a running or paused task.
 // Used to prevent concurrent task execution in the same channel.
-func (sm *StateManager) HasActiveTask(channelID string) bool {
+func (sm *JSONStateManager) HasActiveTask(channelID string) bool {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	for _, rec := range sm.records {
@@ -163,7 +163,7 @@ func (sm *StateManager) HasActiveTask(channelID string) bool {
 
 // GetByChannel returns the most recent task record for a given channel,
 // regardless of status. Useful for retry operations.
-func (sm *StateManager) GetByChannel(channelID string) (*TaskRecord, bool) {
+func (sm *JSONStateManager) GetByChannel(channelID string) (*TaskRecord, bool) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 

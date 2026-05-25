@@ -24,81 +24,115 @@ type StatusChecker interface {
 	CheckStatus(taskID string) (status string, err error)
 }
 
+// RecoveryResult captures the outcome of recovering a single task.
+type RecoveryResult struct {
+	TaskID     string
+	ChannelID  string
+	FinalStatus string // the status written to the state store
+}
+
 // RecoverActiveTasks checks all tasks currently marked as "running" in the
 // StateManager against the worker, and updates both the Slack message
 // and the persisted state to reflect the true status.
 //
 // This should be called once at startup, before the main Slack event loop,
 // to reconcile state after a gateway crash or restart.
+//
+// It returns a slice of RecoveryResult (one per active task found) and an
+// error only if the context is cancelled. Individual task failures are logged
+// but do not abort the recovery of remaining tasks.
 func RecoverActiveTasks(
 	ctx context.Context,
-	stateMgr *statemgr.StateManager,
+	stateMgr statemgr.StateManager,
 	checker StatusChecker,
 	slackClient SlackClient,
-) error {
+) ([]RecoveryResult, error) {
 	active := stateMgr.ListActive()
 	if len(active) == 0 {
 		log.Println("Recovery: no active tasks to recover")
-		return nil
+		return nil, nil
 	}
 
 	log.Printf("Recovery: checking %d active task(s)", len(active))
 
+	var results []RecoveryResult
+
 	for _, rec := range active {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return results, ctx.Err()
 		default:
 		}
 
-		if err := recoverSingle(ctx, stateMgr, checker, slackClient, rec); err != nil {
+		result, err := recoverSingle(ctx, stateMgr, checker, slackClient, rec)
+		if err != nil {
 			log.Printf("Recovery: failed to recover task %s: %v", rec.TaskID, err)
 			// Continue recovering other tasks even if one fails.
+			continue
 		}
+		results = append(results, result)
 	}
 
-	return nil
+	return results, nil
 }
 
 func recoverSingle(
 	ctx context.Context,
-	stateMgr *statemgr.StateManager,
+	stateMgr statemgr.StateManager,
 	checker StatusChecker,
 	slackClient SlackClient,
 	rec *statemgr.TaskRecord,
-) error {
+) (RecoveryResult, error) {
 	log.Printf("Recovery: checking task %s (channel=%s, ts=%s)", rec.TaskID, rec.ChannelID, rec.SlackTS)
 
 	status, err := checker.CheckStatus(rec.TaskID)
 	if err != nil {
 		log.Printf("Recovery: CheckStatus failed for %s: %v — marking as failed", rec.TaskID, err)
-		return updateRecoveredStatus(ctx, stateMgr, slackClient, rec, "error",
-			fmt.Sprintf("Recovery check failed: %v", err))
+		if updateErr := updateRecoveredStatus(ctx, stateMgr, slackClient, rec, "error",
+			fmt.Sprintf("Recovery check failed: %v", err)); updateErr != nil {
+			return RecoveryResult{}, updateErr
+		}
+		return RecoveryResult{TaskID: rec.TaskID, ChannelID: rec.ChannelID, FinalStatus: "error"}, nil
 	}
 
+	var finalStatus string
 	switch status {
 	case "done", "completed":
 		log.Printf("Recovery: task %s is done", rec.TaskID)
-		return updateRecoveredStatus(ctx, stateMgr, slackClient, rec, "done", "✅ Recovered: Task completed successfully")
+		finalStatus = "done"
 	case "error", "failed":
 		log.Printf("Recovery: task %s failed", rec.TaskID)
-		return updateRecoveredStatus(ctx, stateMgr, slackClient, rec, "error", "❌ Recovered: Task failed")
+		finalStatus = "error"
 	case "timeout", "timed_out":
 		log.Printf("Recovery: task %s timed out", rec.TaskID)
-		return updateRecoveredStatus(ctx, stateMgr, slackClient, rec, "error", "❌ Recovered: Task timed out")
+		finalStatus = "error"
 	case "running", "in_progress":
 		log.Printf("Recovery: task %s is still running", rec.TaskID)
-		return updateRecoveredStatus(ctx, stateMgr, slackClient, rec, "running", "🔄 Recovered: Task still running")
+		finalStatus = "running"
 	default:
 		log.Printf("Recovery: unknown status %q for task %s — marking as error", status, rec.TaskID)
-		return updateRecoveredStatus(ctx, stateMgr, slackClient, rec, "error",
-			fmt.Sprintf("❌ Recovered: Unknown status %q", status))
+		finalStatus = "error"
 	}
+
+	var message string
+	switch finalStatus {
+	case "done":
+		message = "✅ Recovered: Task completed successfully"
+	case "running":
+		message = "🔄 Recovered: Task still running"
+	case "error":
+		message = "❌ Recovered: Task failed"
+	}
+
+	if err := updateRecoveredStatus(ctx, stateMgr, slackClient, rec, finalStatus, message); err != nil {
+		return RecoveryResult{}, err
+	}
+	return RecoveryResult{TaskID: rec.TaskID, ChannelID: rec.ChannelID, FinalStatus: finalStatus}, nil
 }
 
 func updateRecoveredStatus(
 	ctx context.Context,
-	stateMgr *statemgr.StateManager,
+	stateMgr statemgr.StateManager,
 	slackClient SlackClient,
 	rec *statemgr.TaskRecord,
 	newStatus string,

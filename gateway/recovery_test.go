@@ -75,7 +75,7 @@ func (m *mockStatusChecker) CheckStatus(taskID string) (string, error) {
 // immediately when there are no running tasks.
 func TestRecoverActiveTasks_NoActiveTasks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	sm, err := statemgr.NewStateManager(path)
+	sm, err := statemgr.NewJSONStateManager(path)
 	if err != nil {
 		t.Fatalf("NewStateManager: %v", err)
 	}
@@ -83,9 +83,12 @@ func TestRecoverActiveTasks_NoActiveTasks(t *testing.T) {
 	mockSlack := &mockSlackClient{}
 	checker := &mockStatusChecker{statuses: map[string]string{}}
 
-	err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
+	results, err := RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected no recovery results, got %d", len(results))
 	}
 
 	if len(mockSlack.updates) != 0 {
@@ -97,7 +100,7 @@ func TestRecoverActiveTasks_NoActiveTasks(t *testing.T) {
 // by the worker gets its Slack message updated and state changed.
 func TestRecoverActiveTasks_DoneTask(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	sm, err := statemgr.NewStateManager(path)
+	sm, err := statemgr.NewJSONStateManager(path)
 	if err != nil {
 		t.Fatalf("NewStateManager: %v", err)
 	}
@@ -120,7 +123,7 @@ func TestRecoverActiveTasks_DoneTask(t *testing.T) {
 		taskID: "done",
 	}}
 
-	err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
+	_, err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -161,7 +164,7 @@ func TestRecoverActiveTasks_ErrorTask(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "state.json")
-			sm, err := statemgr.NewStateManager(path)
+			sm, err := statemgr.NewJSONStateManager(path)
 			if err != nil {
 				t.Fatalf("NewStateManager: %v", err)
 			}
@@ -184,7 +187,7 @@ func TestRecoverActiveTasks_ErrorTask(t *testing.T) {
 				taskID: tc.workerStatus,
 			}}
 
-			err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
+			_, err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -207,7 +210,7 @@ func TestRecoverActiveTasks_ErrorTask(t *testing.T) {
 // TestRecoverActiveTasks_StillRunning verifies the running/in_progress case.
 func TestRecoverActiveTasks_StillRunning(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	sm, err := statemgr.NewStateManager(path)
+	sm, err := statemgr.NewJSONStateManager(path)
 	if err != nil {
 		t.Fatalf("NewStateManager: %v", err)
 	}
@@ -230,7 +233,7 @@ func TestRecoverActiveTasks_StillRunning(t *testing.T) {
 		taskID: "running",
 	}}
 
-	err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
+	_, err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -252,7 +255,7 @@ func TestRecoverActiveTasks_StillRunning(t *testing.T) {
 // itself fails, the task is marked as error.
 func TestRecoverActiveTasks_CheckStatusError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	sm, err := statemgr.NewStateManager(path)
+	sm, err := statemgr.NewJSONStateManager(path)
 	if err != nil {
 		t.Fatalf("NewStateManager: %v", err)
 	}
@@ -276,7 +279,7 @@ func TestRecoverActiveTasks_CheckStatusError(t *testing.T) {
 		errs:     map[string]error{taskID: os.ErrNotExist},
 	}
 
-	err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
+	_, err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -298,7 +301,7 @@ func TestRecoverActiveTasks_CheckStatusError(t *testing.T) {
 // with different statuses.
 func TestRecoverActiveTasks_MultipleTasks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	sm, err := statemgr.NewStateManager(path)
+	sm, err := statemgr.NewJSONStateManager(path)
 	if err != nil {
 		t.Fatalf("NewStateManager: %v", err)
 	}
@@ -333,7 +336,7 @@ func TestRecoverActiveTasks_MultipleTasks(t *testing.T) {
 	}
 	checker := &mockStatusChecker{statuses: statuses}
 
-	err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
+	_, err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -358,7 +361,7 @@ func TestRecoverActiveTasks_MultipleTasks(t *testing.T) {
 // respects context cancellation.
 func TestRecoverActiveTasks_ContextCancellation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	sm, err := statemgr.NewStateManager(path)
+	sm, err := statemgr.NewJSONStateManager(path)
 	if err != nil {
 		t.Fatalf("NewStateManager: %v", err)
 	}
@@ -384,7 +387,7 @@ func TestRecoverActiveTasks_ContextCancellation(t *testing.T) {
 		"task-0": "done",
 	}}
 
-	err = RecoverActiveTasks(ctx, sm, checker, mockSlack)
+	_, err = RecoverActiveTasks(ctx, sm, checker, mockSlack)
 	if err == nil {
 		t.Log("Recovery returned nil (processed before cancellation was checked)")
 	} else if err != context.Canceled {
@@ -396,7 +399,7 @@ func TestRecoverActiveTasks_ContextCancellation(t *testing.T) {
 // not in "running" state are left untouched.
 func TestRecoverActiveTasks_CompletedTasksNotRecovered(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	sm, err := statemgr.NewStateManager(path)
+	sm, err := statemgr.NewJSONStateManager(path)
 	if err != nil {
 		t.Fatalf("NewStateManager: %v", err)
 	}
@@ -425,7 +428,7 @@ func TestRecoverActiveTasks_CompletedTasksNotRecovered(t *testing.T) {
 		"running-task": "done",
 	}}
 
-	err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
+	_, err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -449,7 +452,7 @@ func TestRecoverActiveTasks_CompletedTasksNotRecovered(t *testing.T) {
 // defaults to error.
 func TestRecoverActiveTasks_UnknownStatus(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	sm, err := statemgr.NewStateManager(path)
+	sm, err := statemgr.NewJSONStateManager(path)
 	if err != nil {
 		t.Fatalf("NewStateManager: %v", err)
 	}
@@ -472,7 +475,7 @@ func TestRecoverActiveTasks_UnknownStatus(t *testing.T) {
 		taskID: "pending", // unknown status
 	}}
 
-	err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
+	_, err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -541,7 +544,7 @@ func TestBuildRecoveryBlocks(t *testing.T) {
 // UpdateMessage is actually called with the correct blocks for a recovery scenario.
 func TestBuildRecoveryBlocks_VerifySlackCallContent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	sm, err := statemgr.NewStateManager(path)
+	sm, err := statemgr.NewJSONStateManager(path)
 	if err != nil {
 		t.Fatalf("NewStateManager: %v", err)
 	}
@@ -564,7 +567,7 @@ func TestBuildRecoveryBlocks_VerifySlackCallContent(t *testing.T) {
 		taskID: "done",
 	}}
 
-	err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
+	_, err = RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -620,5 +623,161 @@ func TestWorkerCheckStatusInterface(t *testing.T) {
 	_, err = mc.CheckStatus("t2")
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+}
+
+// TestRecoveryResult_ReturnsCorrectValues verifies that RecoverActiveTasks
+// returns RecoveryResult entries with the right task IDs and final statuses.
+func TestRecoveryResult_ReturnsCorrectValues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	sm, err := statemgr.NewJSONStateManager(path)
+	if err != nil {
+		t.Fatalf("NewStateManager: %v", err)
+	}
+
+	// Set up three tasks with different outcomes.
+	tasks := []struct {
+		taskID       string
+		channelID    string
+		workerStatus string
+		wantStatus   string
+	}{
+		{"t1", "C1", "done", "done"},
+		{"t2", "C2", "error", "error"},
+		{"t3", "C3", "running", "running"},
+	}
+	for _, tc := range tasks {
+		if err := sm.Set(statemgr.TaskRecord{
+			TaskID:    tc.taskID,
+			ChannelID: tc.channelID,
+			SlackTS:   "1.0",
+			Status:    "running",
+		}); err != nil {
+			t.Fatalf("Set %s: %v", tc.taskID, err)
+		}
+	}
+
+	mockSlack := &mockSlackClient{}
+	statuses := map[string]string{}
+	for _, tc := range tasks {
+		statuses[tc.taskID] = tc.workerStatus
+	}
+	checker := &mockStatusChecker{statuses: statuses}
+
+	results, err := RecoverActiveTasks(context.Background(), sm, checker, mockSlack)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != len(tasks) {
+		t.Fatalf("expected %d results, got %d", len(tasks), len(results))
+	}
+
+	// Build a map for easy lookup.
+	resultMap := make(map[string]RecoveryResult)
+	for _, r := range results {
+		resultMap[r.TaskID] = r
+	}
+
+	for _, tc := range tasks {
+		r, ok := resultMap[tc.taskID]
+		if !ok {
+			t.Errorf("missing result for task %s", tc.taskID)
+			continue
+		}
+		if r.FinalStatus != tc.wantStatus {
+			t.Errorf("task %s FinalStatus = %q, want %q", tc.taskID, r.FinalStatus, tc.wantStatus)
+		}
+		if r.ChannelID != tc.channelID {
+			t.Errorf("task %s ChannelID = %q, want %q", tc.taskID, r.ChannelID, tc.channelID)
+		}
+	}
+}
+
+// TestReconcileAfterRecovery_DoneTask verifies that a recovered done task
+// frees the channel slot and triggers dequeue of a waiting task.
+func TestReconcileAfterRecovery_DoneTask(t *testing.T) {
+	tq := NewTaskQueue(TaskQueueConfig{MaxConcurrentTasks: 1, MaxPerChannel: 1})
+
+	// Simulate: Task A was running on C1, recovered as "done".
+	// Task B was queued on C1 waiting for A.
+	taskB := NewQueuedTask("task-b", "C1", "U1", "hello")
+	if _, err := tq.Enqueue(taskB); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	// Before reconciliation, C1 has an active task (taskB in queue).
+	if !tq.ChannelHasActiveTask("C1") {
+		t.Fatal("C1 should have active task before reconciliation")
+	}
+
+	// Create a minimal gateway with just the taskQueue for testing.
+	g := &SlackGateway{taskQueue: tq}
+
+	// Reconcile: task A recovered as "done".
+	g.ReconcileAfterRecovery([]RecoveryResult{
+		{TaskID: "task-a", ChannelID: "C1", FinalStatus: "done"},
+	})
+
+	// After reconciliation, task A is done and task B should be dequeued.
+	if tq.RunningCount() != 1 {
+		t.Errorf("RunningCount = %d, want 1 (taskB should be running)", tq.RunningCount())
+	}
+	if tq.QueueLength() != 0 {
+		t.Errorf("QueueLength = %d, want 0", tq.QueueLength())
+	}
+}
+
+// TestReconcileAfterRecovery_StillRunning verifies that a task still running
+// after recovery is tracked in the queue so new requests are queued.
+func TestReconcileAfterRecovery_StillRunning(t *testing.T) {
+	tq := NewTaskQueue(TaskQueueConfig{MaxConcurrentTasks: 5, MaxPerChannel: 1})
+
+	g := &SlackGateway{taskQueue: tq}
+
+	// Recover a still-running task.
+	g.ReconcileAfterRecovery([]RecoveryResult{
+		{TaskID: "task-running", ChannelID: "C1", FinalStatus: "running"},
+	})
+
+	// The task should be tracked as running.
+	if tq.RunningCount() != 1 {
+		t.Errorf("RunningCount = %d, want 1", tq.RunningCount())
+	}
+
+	// C1 should have an active task so new requests get queued.
+	if !tq.ChannelHasActiveTask("C1") {
+		t.Error("C1 should have active task after recovering a running task")
+	}
+
+	// A new task on C1 should be queued, not executed directly.
+	taskNew := NewQueuedTask("task-new", "C1", "U1", "hello")
+	pos, err := tq.Enqueue(taskNew)
+	if err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+	if pos != 1 {
+		t.Errorf("new task position = %d, want 1 (should be queued)", pos)
+	}
+}
+
+// TestReconcileAfterRecovery_ErrorFreesChannel verifies that a recovered
+// error task frees the channel for new requests.
+func TestReconcileAfterRecovery_ErrorFreesChannel(t *testing.T) {
+	tq := NewTaskQueue(TaskQueueConfig{MaxConcurrentTasks: 5, MaxPerChannel: 1})
+
+	g := &SlackGateway{taskQueue: tq}
+
+	// Recover a task as error.
+	g.ReconcileAfterRecovery([]RecoveryResult{
+		{TaskID: "task-err", ChannelID: "C1", FinalStatus: "error"},
+	})
+
+	// Channel should be free after error.
+	if tq.ChannelHasActiveTask("C1") {
+		t.Error("C1 should NOT have active task after error recovery")
+	}
+	if tq.RunningCount() != 0 {
+		t.Errorf("RunningCount = %d, want 0", tq.RunningCount())
 	}
 }
