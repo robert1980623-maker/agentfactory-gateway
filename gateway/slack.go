@@ -63,8 +63,11 @@ func NewSlackGateway(botToken, appToken string, w *worker.PythonWorker, sw *work
 	client := slack.New(botToken, slack.OptionAppLevelToken(appToken))
 	stopCtx, stopCancel := context.WithCancel(context.Background())
 	socketmodeClient := socketmode.New(client,
-		socketmode.OptionDebug(true),
-		socketmode.OptionPingInterval(15*time.Second),
+		// socketmode.OptionDebug(true), // Disabled in production — logs every ping/pong frame
+		socketmode.OptionPingInterval(60*time.Second), // Client-side ping disabled (server pings keep connection alive)
+		// NOTE: slack-go v0.15.0 hardcodes a 10s pong write deadline. Shorter ping intervals
+		// (e.g. 8s) caused disconnect loops in some network environments. Setting to 60s lets
+		// the server's pings handle keepalive without triggering client-side pong timeouts.
 	)
 	hitlHandler := NewHITLHandler(w, sw, stateMgr, client)
 	taskQueue := NewTaskQueue(TaskQueueConfig{MaxConcurrentTasks: 5, MaxPerChannel: 1})
@@ -280,6 +283,14 @@ func (g *SlackGateway) Start(ctx context.Context) error {
 				log.Printf("[SOCKETMODE ERROR] Connection failed: %v", evt.Data)
 				g.setConnected(false)
 				SetConnectionStatus(false)
+			case socketmode.EventTypeIncomingError:
+				if incomingErr, ok := evt.Data.(*slack.IncomingEventError); ok {
+					log.Printf("[SOCKETMODE ERROR] Incoming error: %v", incomingErr.ErrorObj)
+				} else {
+					log.Printf("[SOCKETMODE ERROR] Incoming error (unknown data type: %T)", evt.Data)
+				}
+				g.setConnected(false)
+				SetConnectionStatus(false)
 			case socketmode.EventTypeConnected:
 				log.Println("[SOCKETMODE] Connected.")
 				g.setConnected(true)
@@ -365,7 +376,9 @@ func (g *SlackGateway) handleEvent(evt socketmode.Event) {
 	log.Printf("[EVENT] Type: %s, InnerEvent type: %T", eventsAPI.Type, eventsAPI.InnerEvent.Data)
 	log.Printf("[EVENT] InnerEvent data: %+v", eventsAPI.InnerEvent.Data)
 
-	g.sm.Ack(*evt.Request)
+	if evt.Request != nil {
+		g.sm.Ack(*evt.Request)
+	}
 
 	if mentionEvent, ok := eventsAPI.InnerEvent.Data.(*slackevents.AppMentionEvent); ok {
 		log.Printf("[EVENT] AppMentionEvent matched: user=%s, text=%q, channel=%s", mentionEvent.User, mentionEvent.Text, mentionEvent.Channel)
@@ -398,10 +411,17 @@ func (g *SlackGateway) handleEvent(evt socketmode.Event) {
 
 func (g *SlackGateway) handleInteractiveCallback(evt socketmode.Event) {
 	atomic.AddInt64(&totalEventsProcessed, 1)
-	g.sm.Ack(*evt.Request)
+	if evt.Request != nil {
+		g.sm.Ack(*evt.Request)
+	}
 
 	var callback slack.InteractionCallback
-	if err := json.Unmarshal(evt.Data.([]byte), &callback); err != nil {
+	raw, ok := evt.Data.([]byte)
+	if !ok {
+		log.Printf("Failed to parse interaction callback: unexpected data type %T (expected []byte)", evt.Data)
+		return
+	}
+	if err := json.Unmarshal(raw, &callback); err != nil {
 		log.Printf("Failed to parse interaction callback: %v", err)
 		return
 	}
@@ -817,7 +837,7 @@ func (g *SlackGateway) ConnectionDuration() time.Duration {
 
 // monitorConnectionHealth periodically checks connection status and logs alerts.
 func (g *SlackGateway) monitorConnectionHealth() {
-	ticker := time.NewTicker(60 * time.Second)
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
 	streak := 0 // consecutive unhealthy checks
@@ -836,14 +856,12 @@ func (g *SlackGateway) monitorConnectionHealth() {
 
 			streak++
 			if streak >= 3 {
-				log.Printf("[MONITOR] ⚠️ Connection down for %d consecutive checks (%d min)", streak, streak)
+				log.Printf("[MONITOR] ⚠️  Connection down for %d consecutive checks (%ds)", streak, streak*10)
 			}
 			if streak >= 6 {
-				log.Printf("[MONITOR] 🚨 CRITICAL: Connection down for %d min, attempting reconnect trigger", streak)
-				// Force a reconnect by cancelling and re-establishing the context.
-				if g.stopCancel != nil {
-					g.stopCancel()
-				}
+				log.Printf("[MONITOR] 🚨 CRITICAL: Connection down for %ds — socketmode should auto-reconnect", streak*10)
+				// Monitor is observability only — do NOT call stopCancel() here.
+				// socketmode handles reconnection internally; we just log.
 			}
 		}
 	}
