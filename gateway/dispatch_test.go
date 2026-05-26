@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -95,7 +96,7 @@ func TestExecuteDispatch_StartEvent(t *testing.T) {
 
 	// ExecuteDispatch will try to run Python which may not exist,
 	// but we should still get the start event.
-	_ = sw.ExecuteDispatch(req, cb)
+	_ = sw.ExecuteDispatch(context.Background(), req, cb)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -138,7 +139,7 @@ func TestExecuteDispatch_AgentCount_PipeSeparated(t *testing.T) {
 
 	// Single task (no pipes)
 	req := protocol.TaskRequest{Task: "build the API", Dispatch: true}
-	_ = sw.ExecuteDispatch(req, cb)
+	_ = sw.ExecuteDispatch(context.Background(), req, cb)
 
 	mu.Lock()
 	count := events[0].Payload.TotalAgents
@@ -151,7 +152,7 @@ func TestExecuteDispatch_AgentCount_PipeSeparated(t *testing.T) {
 	// Two tasks
 	events = nil
 	req = protocol.TaskRequest{Task: "build API|write docs", Dispatch: true}
-	_ = sw.ExecuteDispatch(req, cb)
+	_ = sw.ExecuteDispatch(context.Background(), req, cb)
 
 	mu.Lock()
 	count = events[0].Payload.TotalAgents
@@ -164,7 +165,7 @@ func TestExecuteDispatch_AgentCount_PipeSeparated(t *testing.T) {
 	// Five tasks
 	events = nil
 	req = protocol.TaskRequest{Task: "a|b|c|d|e", Dispatch: true}
-	_ = sw.ExecuteDispatch(req, cb)
+	_ = sw.ExecuteDispatch(context.Background(), req, cb)
 
 	mu.Lock()
 	count = events[0].Payload.TotalAgents
@@ -198,7 +199,7 @@ func TestExecuteDispatch_AgentRoles(t *testing.T) {
 			tasks[j] = fmt.Sprintf("task-%d", j+1)
 		}
 		req := protocol.TaskRequest{Task: strings.Join(tasks, "|"), Dispatch: true}
-		_ = sw.ExecuteDispatch(req, cb)
+		_ = sw.ExecuteDispatch(context.Background(), req, cb)
 
 		mu.Lock()
 		agents := events[0].Payload.Agents
@@ -237,7 +238,7 @@ func TestExecuteDispatch_EmptyTask(t *testing.T) {
 	}
 
 	req := protocol.TaskRequest{Task: "", Dispatch: true}
-	_ = sw.ExecuteDispatch(req, cb)
+	_ = sw.ExecuteDispatch(context.Background(), req, cb)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -399,7 +400,7 @@ func TestDispatchWithCallbackChain(t *testing.T) {
 		Dispatch: true,
 	}
 
-	_ = sw.ExecuteDispatch(req, cb)
+	_ = sw.ExecuteDispatch(context.Background(), req, cb)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -435,7 +436,7 @@ func TestDispatchContextInjection(t *testing.T) {
 		Dispatch: true,
 		Context:  map[string]interface{}{"task_id": "test-123"},
 	}
-	_ = sw.ExecuteDispatch(req, cb)
+	_ = sw.ExecuteDispatch(context.Background(), req, cb)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -564,7 +565,7 @@ func TestDispatchWithTimeout(t *testing.T) {
 
 	// Execute with a timeout context (simulated via goroutine).
 	go func() {
-		_ = sw.ExecuteDispatch(req, cb)
+		_ = sw.ExecuteDispatch(context.Background(), req, cb)
 		close(done)
 	}()
 

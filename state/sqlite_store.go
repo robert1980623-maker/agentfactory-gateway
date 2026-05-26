@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -12,7 +13,8 @@ const iso8601 = "2006-01-02T15:04:05Z"
 
 // SQLiteStore implements task state persistence using SQLite.
 type SQLiteStore struct {
-	db *sql.DB
+	db     *sql.DB
+	cancel context.CancelFunc
 }
 
 // NewSQLiteStore creates a new SQLiteStore and initialises the schema.
@@ -22,10 +24,28 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
+	// Connection pool: SQLite does not support concurrent writers.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
 	// Enable WAL mode for better concurrency.
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("set WAL mode: %w", err)
+	}
+
+	// PRAGMA optimisations.
+	pragmas := []string{
+		"PRAGMA busy_timeout = 5000;",                // 5s wait for lock
+		"PRAGMA synchronous = NORMAL;",               // balance safety and performance
+		"PRAGMA wal_autocheckpoint = 1000;",          // WAL auto checkpoint
+	}
+	for _, p := range pragmas {
+		if _, err := db.Exec(p); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("exec %s: %w", p, err)
+		}
 	}
 
 	_, err = db.Exec(`
@@ -44,7 +64,38 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("create table: %w", err)
 	}
 
-	return &SQLiteStore{db: db}, nil
+	// Indexes for common queries (ListActive, HasActiveTask, GetByChannel).
+	indexes := []string{
+		"CREATE INDEX IF NOT EXISTS idx_task_status ON task_records(status)",
+		"CREATE INDEX IF NOT EXISTS idx_task_channel ON task_records(channel_id)",
+		"CREATE INDEX IF NOT EXISTS idx_task_channel_status ON task_records(channel_id, status)",
+	}
+	for _, idx := range indexes {
+		if _, err := db.Exec(idx); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("create index: %w", err)
+		}
+	}
+
+	// Start background WAL checkpoint goroutine.
+	ctx, cancel := context.WithCancel(context.Background())
+	go checkpointLoop(ctx, db)
+
+	return &SQLiteStore{db: db, cancel: cancel}, nil
+}
+
+// checkpointLoop runs wal_checkpoint(PASSIVE) every 5 minutes until ctx is cancelled.
+func checkpointLoop(ctx context.Context, db *sql.DB) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_, _ = db.Exec("PRAGMA wal_checkpoint(PASSIVE)")
+		}
+	}
 }
 
 // Set creates or replaces a task record. If UpdatedAt is zero, it is set to now.
@@ -148,6 +199,9 @@ func (s *SQLiteStore) GetByChannel(channelID string) (*TaskRecord, bool) {
 
 // Close closes the underlying database connection.
 func (s *SQLiteStore) Close() error {
+	if s.cancel != nil {
+		s.cancel()
+	}
 	if s.db != nil {
 		return s.db.Close()
 	}

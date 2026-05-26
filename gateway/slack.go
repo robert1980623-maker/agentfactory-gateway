@@ -48,13 +48,24 @@ type SlackGateway struct {
 	hitlHandler   *HITLHandler
 	progressCache *progressCache
 
-	mu      sync.Mutex
-	stopped bool
+	mu       sync.Mutex
+	stopped  bool
+	stopCtx  context.Context    // cancellation context for RunContext
+	stopCancel context.CancelFunc // called in Stop() to disconnect socketmode
+
+	// Connection health tracking
+	muConn     sync.RWMutex
+	connected  bool
+	lastConnAt time.Time
 }
 
 func NewSlackGateway(botToken, appToken string, w *worker.PythonWorker, sw *worker.StreamWorker, stateMgr statemgr.StateManager) *SlackGateway {
 	client := slack.New(botToken, slack.OptionAppLevelToken(appToken))
-	socketmodeClient := socketmode.New(client)
+	stopCtx, stopCancel := context.WithCancel(context.Background())
+	socketmodeClient := socketmode.New(client,
+		socketmode.OptionDebug(true),
+		socketmode.OptionPingInterval(15*time.Second),
+	)
 	hitlHandler := NewHITLHandler(w, sw, stateMgr, client)
 	taskQueue := NewTaskQueue(TaskQueueConfig{MaxConcurrentTasks: 5, MaxPerChannel: 1})
 	g := &SlackGateway{
@@ -66,6 +77,8 @@ func NewSlackGateway(botToken, appToken string, w *worker.PythonWorker, sw *work
 		taskQueue:     taskQueue,
 		hitlHandler:   hitlHandler,
 		progressCache: newProgressCache(),
+		stopCtx:       stopCtx,
+		stopCancel:    stopCancel,
 	}
 
 	// Set dequeue callback to automatically dispatch the next queued task.
@@ -188,7 +201,7 @@ func (g *SlackGateway) dispatchQueuedTask(task *QueuedTask) {
 
 	req := protocol.TaskRequest{Task: task.Prompt}
 	if g.streamWorker != nil {
-		if err := g.streamWorker.Execute(req, cb); err != nil {
+		if err := g.streamWorker.Execute(context.Background(), req, cb); err != nil {
 			atomic.AddInt64(&metricErrors, 1)
 			log.Printf("Stream worker error for queued task %s: %v", task.TaskID, err)
 			g.postError(ts, err.Error())
@@ -244,6 +257,9 @@ func (g *SlackGateway) ReconcileAfterRecovery(results []RecoveryResult) {
 }
 
 func (g *SlackGateway) Start(ctx context.Context) error {
+	// Start connection health monitor goroutine.
+	go g.monitorConnectionHealth()
+
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -259,10 +275,15 @@ func (g *SlackGateway) Start(ctx context.Context) error {
 				g.handleInteractiveCallback(evt)
 			case socketmode.EventTypeConnecting:
 				log.Println("[SOCKETMODE] Connecting...")
+				g.setConnected(false)
 			case socketmode.EventTypeConnectionError:
-				log.Printf("[SOCKETMODE] Connection failed: %v", evt.Data)
+				log.Printf("[SOCKETMODE ERROR] Connection failed: %v", evt.Data)
+				g.setConnected(false)
+				SetConnectionStatus(false)
 			case socketmode.EventTypeConnected:
 				log.Println("[SOCKETMODE] Connected.")
+				g.setConnected(true)
+				SetConnectionStatus(true)
 			default:
 				log.Printf("[SOCKETMODE] Unhandled event type: %v", evt.Type)
 				if evt.Request != nil {
@@ -273,7 +294,7 @@ func (g *SlackGateway) Start(ctx context.Context) error {
 	}()
 
 	log.Println("[GATEWAY] Calling RunContext...")
-	err := g.sm.RunContext(ctx)
+	err := g.sm.RunContext(g.stopCtx)
 	log.Printf("[GATEWAY] RunContext returned: %v", err)
 
 	// Context was cancelled — perform graceful drain.
@@ -293,6 +314,12 @@ func (g *SlackGateway) Stop(ctx context.Context) error {
 	}
 	g.stopped = true
 	g.mu.Unlock()
+
+	// Cancel the stopCtx to trigger SocketMode disconnection.
+	if g.stopCancel != nil {
+		log.Println("[SOCKETMODE] Cancelling stopCtx to disconnect...")
+		g.stopCancel()
+	}
 
 	log.Println("Draining active workers...")
 
@@ -330,6 +357,9 @@ func (g *SlackGateway) handleEvent(evt socketmode.Event) {
 	eventsAPI, ok := evt.Data.(slackevents.EventsAPIEvent)
 	if !ok {
 		log.Printf("[EVENT] Failed to convert event data: %T", evt.Data)
+		if evt.Request != nil {
+			g.sm.Ack(*evt.Request)
+		}
 		return
 	}
 	log.Printf("[EVENT] Type: %s, InnerEvent type: %T", eventsAPI.Type, eventsAPI.InnerEvent.Data)
@@ -441,24 +471,23 @@ func (g *SlackGateway) handleRetryTask(callback slack.InteractionCallback) {
 		return
 	}
 
-	// Find the last task for this channel to get its original input.
-	// We look for any record (done, error, stopped) for this channel.
-	active := g.stateMgr.ListActive()
-	for _, rec := range active {
-		if rec.ChannelID == callback.Channel.ID {
-			// Re-run the same task by creating a synthetic mention event.
-			mentionEvent := &slackevents.AppMentionEvent{
-				User:      callback.User.ID,
-				Text:      "<@BOT_ID> retry last task",
-				Channel:   callback.Channel.ID,
-				TimeStamp: callback.MessageTs,
-			}
-			g.handleMentionStream(mentionEvent)
-			return
-		}
+	// Find the last task for this channel to get its original prompt.
+	// GetByChannel returns the most recent task record regardless of status
+	// (done, error, stopped), unlike ListActive which only returns running tasks.
+	rec, ok := g.stateMgr.GetByChannel(callback.Channel.ID)
+	if !ok || rec.Prompt == "" {
+		g.reply(callback.Channel.ID, "No task found to retry.")
+		return
 	}
 
-	g.reply(callback.Channel.ID, "No task found to retry.")
+	// Re-run the same task by creating a synthetic mention event with the original prompt.
+	mentionEvent := &slackevents.AppMentionEvent{
+		User:      callback.User.ID,
+		Text:      rec.Prompt,
+		Channel:   callback.Channel.ID,
+		TimeStamp: callback.MessageTs,
+	}
+	g.handleMentionStream(mentionEvent)
 }
 
 // taskState holds the Slack message reference for an ongoing streaming task.
@@ -653,9 +682,9 @@ func (g *SlackGateway) handleMentionStream(event *slackevents.AppMentionEvent) {
 		log.Printf("[STREAM] Calling streamWorker.Execute with task=%q dispatch=%v", taskText, req.Dispatch)
 		var execErr error
 		if req.Dispatch {
-			execErr = g.streamWorker.ExecuteDispatch(req, cb)
+			execErr = g.streamWorker.ExecuteDispatch(context.Background(), req, cb)
 		} else {
-			execErr = g.streamWorker.Execute(req, cb)
+			execErr = g.streamWorker.Execute(context.Background(), req, cb)
 		}
 		if execErr != nil {
 			atomic.AddInt64(&metricErrors, 1)
@@ -747,6 +776,77 @@ var taskCounter int64
 func (g *SlackGateway) generateTaskID() string {
 	counter := atomic.AddInt64(&taskCounter, 1)
 	return fmt.Sprintf("task-%d", counter)
+}
+
+// setConnected updates the internal connection status.
+func (g *SlackGateway) setConnected(connected bool) {
+	g.muConn.Lock()
+	defer g.muConn.Unlock()
+
+	if connected && !g.connected {
+		log.Printf("[CONN] Connection established at %v", time.Now().UTC().Format(time.RFC3339))
+	} else if !connected && g.connected {
+		log.Printf("[CONN] Connection lost at %v", time.Now().UTC().Format(time.RFC3339))
+	}
+
+	g.connected = connected
+	if connected {
+		g.lastConnAt = time.Now().UTC()
+		SetConnectionStatus(true)
+	} else {
+		SetConnectionStatus(false)
+	}
+}
+
+// IsConnected returns the current connection status.
+func (g *SlackGateway) IsConnected() bool {
+	g.muConn.RLock()
+	defer g.muConn.RUnlock()
+	return g.connected
+}
+
+// ConnectionDuration returns how long the connection has been up (0 if disconnected).
+func (g *SlackGateway) ConnectionDuration() time.Duration {
+	g.muConn.RLock()
+	defer g.muConn.RUnlock()
+	if !g.connected || g.lastConnAt.IsZero() {
+		return 0
+	}
+	return time.Since(g.lastConnAt)
+}
+
+// monitorConnectionHealth periodically checks connection status and logs alerts.
+func (g *SlackGateway) monitorConnectionHealth() {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	streak := 0 // consecutive unhealthy checks
+	for {
+		select {
+		case <-g.stopCtx.Done():
+			log.Println("[MONITOR] Connection health monitor stopped")
+			return
+		case <-ticker.C:
+			if g.IsConnected() {
+				streak = 0
+				dur := g.ConnectionDuration()
+				log.Printf("[MONITOR] Connection healthy (uptime: %v)", dur.Round(time.Second))
+				continue
+			}
+
+			streak++
+			if streak >= 3 {
+				log.Printf("[MONITOR] ⚠️ Connection down for %d consecutive checks (%d min)", streak, streak)
+			}
+			if streak >= 6 {
+				log.Printf("[MONITOR] 🚨 CRITICAL: Connection down for %d min, attempting reconnect trigger", streak)
+				// Force a reconnect by cancelling and re-establishing the context.
+				if g.stopCancel != nil {
+					g.stopCancel()
+				}
+			}
+		}
+	}
 }
 
 // Client returns the internal Slack client, allowing callers to reuse it

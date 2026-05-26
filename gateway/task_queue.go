@@ -76,6 +76,7 @@ func (tq *TaskQueue) Enqueue(task *QueuedTask) (int, error) {
 	tq.waiting = append(tq.waiting, task)
 	tq.channels[task.ChannelID]++
 	atomic.AddInt64(&totalTasksEnqueued, 1)
+	atomic.AddInt64(&queuedTasks, 1)
 
 	return tq.positionOf(task.TaskID), nil
 }
@@ -98,6 +99,9 @@ func (tq *TaskQueue) MarkRunning(taskID string) bool {
 			if err := wt.Transition(TaskStatusRunning); err != nil {
 				// Should not happen if state machine is correct.
 			}
+			// Update metrics.
+			atomic.AddInt64(&activeTasks, 1)
+			atomic.AddInt64(&queuedTasks, -1)
 			return true
 		}
 	}
@@ -107,6 +111,7 @@ func (tq *TaskQueue) MarkRunning(taskID string) bool {
 // MarkDone marks a running task as done and triggers dequeue of the next eligible task.
 func (tq *TaskQueue) MarkDone(taskID string) {
 	atomic.AddInt64(&totalTasksCompleted, 1)
+	atomic.AddInt64(&activeTasks, -1)
 	tq.mu.Lock()
 	delete(tq.running, taskID)
 	tq.mu.Unlock()
@@ -116,6 +121,7 @@ func (tq *TaskQueue) MarkDone(taskID string) {
 // MarkError marks a running task as error and triggers dequeue of the next eligible task.
 func (tq *TaskQueue) MarkError(taskID string) {
 	atomic.AddInt64(&totalTasksCompleted, 1)
+	atomic.AddInt64(&activeTasks, -1)
 	tq.mu.Lock()
 	delete(tq.running, taskID)
 	tq.mu.Unlock()
@@ -138,8 +144,11 @@ func (tq *TaskQueue) releaseTerminalTask(taskID string, isDone bool) {
 	}
 	tq.mu.Unlock()
 
-	if ok && isDone {
-		tq.tryDequeue()
+	if ok {
+		atomic.AddInt64(&activeTasks, -1)
+		if isDone {
+			tq.tryDequeue()
+		}
 	}
 }
 
@@ -182,6 +191,7 @@ func (tq *TaskQueue) MarkRunningDirect(task *QueuedTask) {
 	tq.running[task.TaskID] = task
 	tq.channels[task.ChannelID]++
 	atomic.AddInt64(&totalTasksEnqueued, 1)
+	atomic.AddInt64(&activeTasks, 1)
 }
 
 // FindByChannel finds a running or waiting task for the given channel.
@@ -292,6 +302,9 @@ func (tq *TaskQueue) tryDequeue() {
 		}
 		tq.running[next.TaskID] = next
 		next.Transition(TaskStatusDispatching)
+		// Update metrics: task moved from waiting to running.
+		atomic.AddInt64(&queuedTasks, -1)
+		atomic.AddInt64(&activeTasks, 1)
 	}
 	tq.mu.Unlock()
 

@@ -3,6 +3,7 @@ package worker
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,21 +59,26 @@ func (sw *StreamWorker) Stop() {
 //
 // If req.TaskType is "external" and ClineBin is set, the Cline CLI is used.
 // Otherwise, the Python worker is used (JSONL protocol).
-func (w *StreamWorker) Execute(req protocol.TaskRequest, cb StreamCallback) error {
+func (w *StreamWorker) Execute(ctx context.Context, req protocol.TaskRequest, cb StreamCallback) error {
 	if req.TaskType == "external" && w.ClineBin != "" {
-		return w.executeCline(req, cb)
+		return w.executeCline(ctx, req, cb)
 	}
-	return w.executePython(req, cb)
+	return w.executePython(ctx, req, cb)
 }
 
 // executePython runs the Python worker and streams JSONL events.
-func (w *StreamWorker) executePython(req protocol.TaskRequest, cb StreamCallback) error {
+func (w *StreamWorker) executePython(ctx context.Context, req protocol.TaskRequest, cb StreamCallback) error {
+	// Apply a default 5-minute timeout to prevent runaway tasks from occupying
+	// a concurrency slot indefinitely.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
 	}
 
-	cmd := exec.Command(w.PythonBin, w.Script)
+	cmd := exec.CommandContext(ctx, w.PythonBin, w.Script)
 	cmd.Stdin = bytes.NewReader(payload)
 
 	stdout, err := cmd.StdoutPipe()
@@ -110,6 +116,9 @@ func (w *StreamWorker) executePython(req protocol.TaskRequest, cb StreamCallback
 		case <-w.done:
 			log.Println("StreamWorker: stopped during execution")
 			return ErrWorkerStopped
+		case <-ctx.Done():
+			log.Printf("StreamWorker: task timed out: %v", ctx.Err())
+			return fmt.Errorf("task timed out: %w", ctx.Err())
 		default:
 		}
 
@@ -132,6 +141,9 @@ func (w *StreamWorker) executePython(req protocol.TaskRequest, cb StreamCallback
 
 	// Wait for the process to finish.
 	if err := cmd.Wait(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("task timed out: %w", ctx.Err())
+		}
 		return fmt.Errorf("python worker exited with error: %w", err)
 	}
 
@@ -142,18 +154,22 @@ func (w *StreamWorker) executePython(req protocol.TaskRequest, cb StreamCallback
 }
 
 // executeCline runs the Cline CLI and adapts its stdout text to JSONL events.
-func (w *StreamWorker) executeCline(req protocol.TaskRequest, cb StreamCallback) error {
+func (w *StreamWorker) executeCline(ctx context.Context, req protocol.TaskRequest, cb StreamCallback) error {
 	// Build prompt from task and context.
 	prompt := req.Task
 	if req.Context != nil {
-		if ctx, ok := req.Context["prompt"].(string); ok && ctx != "" {
-			prompt = ctx
+		if promptCtx, ok := req.Context["prompt"].(string); ok && promptCtx != "" {
+			prompt = promptCtx
 		}
 	}
 
+	// Apply a default 10-minute timeout for Cline tasks.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
 	// Build command: cline --auto-approve true --thinking none "<prompt>"
 	args := []string{"--auto-approve", "true", "--thinking", "none", prompt}
-	cmd := exec.Command(w.ClineBin, args...)
+	cmd := exec.CommandContext(ctx, w.ClineBin, args...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -246,7 +262,7 @@ func (w *StreamWorker) executeCline(req protocol.TaskRequest, cb StreamCallback)
 // and progress events through the callback, simulating sub-agent execution.
 // In production, this would coordinate multiple sub-workers; for now it
 // delegates to the Python worker with dispatch mode enabled.
-func (w *StreamWorker) ExecuteDispatch(req protocol.TaskRequest, cb StreamCallback) error {
+func (w *StreamWorker) ExecuteDispatch(ctx context.Context, req protocol.TaskRequest, cb StreamCallback) error {
 	// Set the dispatch flag so the Python worker operates in dispatch mode.
 	req.Dispatch = true
 
@@ -280,7 +296,7 @@ func (w *StreamWorker) ExecuteDispatch(req protocol.TaskRequest, cb StreamCallba
 	}, nil)
 
 	// Execute the actual task through the Python worker in dispatch mode.
-	return w.executePython(req, cb)
+	return w.executePython(ctx, req, cb)
 }
 
 // estimateAgentCount estimates the number of sub-agents from the task text.
