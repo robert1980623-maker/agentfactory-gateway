@@ -178,3 +178,46 @@ func TestSlackEventTypeConstants(t *testing.T) {
 		t.Errorf("EventTypeError = %q, want %q", EventTypeError, "error")
 	}
 }
+
+func TestTaskRequest_DispatchField(t *testing.T) {
+	// Default (zero value) should omit dispatch from JSON.
+	req := TaskRequest{Task: "hello"}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+	if strings.Contains(string(data), "dispatch") {
+		t.Errorf("expected 'dispatch' to be omitted for zero value, got: %s", string(data))
+	}
+
+	// When true, dispatch should appear in JSON.
+	req.Dispatch = true
+	data, err = json.Marshal(req)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"dispatch":true`) {
+		t.Errorf("expected 'dispatch':true in JSON, got: %s", string(data))
+	}
+
+	// Round-trip: unmarshal should restore the field.
+	var decoded TaskRequest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if !decoded.Dispatch {
+		t.Error("expected Dispatch=true after round-trip, got false")
+	}
+}
+
+func TestTaskRequest_DispatchUnmarshal_DefaultFalse(t *testing.T) {
+	// When dispatch is absent in JSON, it should default to false.
+	data := `{"task":"hello"}`
+	var req TaskRequest
+	if err := json.Unmarshal([]byte(data), &req); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if req.Dispatch {
+		t.Error("expected Dispatch=false when absent from JSON, got true")
+	}
+}

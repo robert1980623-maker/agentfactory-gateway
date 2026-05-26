@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -467,6 +468,24 @@ type taskState struct {
 	taskData  *TaskData
 }
 
+// isDispatchTask checks if the message text indicates a dispatch task.
+// Currently detects the "/dispatch " prefix. Future: add LLM-based smart
+// splitting for "并发" keyword and "|" separators.
+func isDispatchTask(text string) bool {
+	return strings.HasPrefix(text, "/dispatch ") || strings.HasPrefix(text, "/dispatch	")
+}
+
+// stripDispatchPrefix removes the "/dispatch " prefix from the task text.
+func stripDispatchPrefix(text string) string {
+	if strings.HasPrefix(text, "/dispatch ") {
+		return strings.TrimPrefix(text, "/dispatch ")
+	}
+	if strings.HasPrefix(text, "/dispatch	") {
+		return strings.TrimPrefix(text, "/dispatch	")
+	}
+	return text
+}
+
 func (g *SlackGateway) handleMentionStream(event *slackevents.AppMentionEvent) {
 	log.Printf("App mention (stream): user=%s text=%s channel=%s", event.User, event.Text, event.Channel)
 
@@ -496,8 +515,17 @@ func (g *SlackGateway) handleMentionStream(event *slackevents.AppMentionEvent) {
 	}
 
 	// No active task for this channel — execute directly.
+	// Detect dispatch mode: "/dispatch " prefix triggers multi-agent dispatch.
+	taskText := event.Text
+	dispatch := isDispatchTask(taskText)
+	if dispatch {
+		taskText = stripDispatchPrefix(taskText)
+		log.Printf("[STREAM] Dispatch mode detected, stripped task=%q", taskText)
+	}
+
 	req := protocol.TaskRequest{
-		Task: event.Text,
+		Task:     taskText,
+		Dispatch: dispatch,
 	}
 
 	ts := &taskState{
@@ -622,11 +650,17 @@ func (g *SlackGateway) handleMentionStream(event *slackevents.AppMentionEvent) {
 		)
 		log.Printf("[STREAM] Created task %s, marking as running", queuedTask.TaskID)
 		g.taskQueue.MarkRunningDirect(queuedTask)
-		log.Printf("[STREAM] Calling streamWorker.Execute with task=%q", event.Text)
-		if err := g.streamWorker.Execute(req, cb); err != nil {
+		log.Printf("[STREAM] Calling streamWorker.Execute with task=%q dispatch=%v", taskText, req.Dispatch)
+		var execErr error
+		if req.Dispatch {
+			execErr = g.streamWorker.ExecuteDispatch(req, cb)
+		} else {
+			execErr = g.streamWorker.Execute(req, cb)
+		}
+		if execErr != nil {
 			atomic.AddInt64(&metricErrors, 1)
-			log.Printf("Stream worker error: %v", err)
-			g.postError(ts, err.Error())
+			log.Printf("Stream worker error: %v", execErr)
+			g.postError(ts, execErr.Error())
 			g.taskQueue.MarkError(queuedTask.TaskID)
 			return
 		}

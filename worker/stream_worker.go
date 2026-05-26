@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/agentfactory/gateway/protocol"
@@ -239,4 +240,82 @@ func (w *StreamWorker) executeCline(req protocol.TaskRequest, cb StreamCallback)
 	}, nil)
 
 	return nil
+}
+
+// ExecuteDispatch runs a dispatch (multi-agent) task. It sends dispatch start
+// and progress events through the callback, simulating sub-agent execution.
+// In production, this would coordinate multiple sub-workers; for now it
+// delegates to the Python worker with dispatch mode enabled.
+func (w *StreamWorker) ExecuteDispatch(req protocol.TaskRequest, cb StreamCallback) error {
+	// Set the dispatch flag so the Python worker operates in dispatch mode.
+	req.Dispatch = true
+
+	// Inject dispatch flag into request context so the Python worker knows
+	// to operate in dispatch mode.
+	if req.Context == nil {
+		req.Context = make(map[string]interface{})
+	}
+	req.Context["dispatch_mode"] = true
+
+	// Send dispatch start event with agent count derived from task text.
+	taskID := ""
+	if req.Context != nil {
+		if tid, ok := req.Context["task_id"].(string); ok {
+			taskID = tid
+		}
+	}
+
+	// Estimate agent count from the task text (pipe-separated or default).
+	agentCount := estimateAgentCount(req.Task)
+
+	cb(&protocol.SlackEvent{
+		Type: protocol.EventTypeStart,
+		Payload: &protocol.EventPayload{
+			TaskID:      taskID,
+			UserInput:   req.Task,
+			TaskType:    "dispatch",
+			TotalAgents: agentCount,
+			Agents:      buildInitialAgents(agentCount),
+		},
+	}, nil)
+
+	// Execute the actual task through the Python worker in dispatch mode.
+	return w.executePython(req, cb)
+}
+
+// estimateAgentCount estimates the number of sub-agents from the task text.
+// Tasks separated by "|" each get their own agent.
+func estimateAgentCount(task string) int {
+	if task == "" {
+		return 1
+	}
+	parts := strings.Split(task, "|")
+	count := 0
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			count++
+		}
+	}
+	if count == 0 {
+		return 1
+	}
+	return count
+}
+
+// buildInitialAgents creates SubAgentInfo entries for the dispatch start event.
+func buildInitialAgents(count int) []protocol.SubAgentInfo {
+	roles := []string{"coordinator", "researcher", "developer", "tester", "reviewer"}
+	agents := make([]protocol.SubAgentInfo, 0, count)
+	for i := 0; i < count; i++ {
+		role := "agent"
+		if i < len(roles) {
+			role = roles[i]
+		}
+		agents = append(agents, protocol.SubAgentInfo{
+			AgentID: fmt.Sprintf("agent-%d", i+1),
+			Role:    role,
+			Status:  "running",
+		})
+	}
+	return agents
 }

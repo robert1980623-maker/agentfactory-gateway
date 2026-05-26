@@ -5,6 +5,7 @@ type TaskRequest struct {
 	Task     string                 `json:"task"`
 	TaskType string                 `json:"task_type,omitempty"` // "internal" | "external"
 	Context  map[string]interface{} `json:"context,omitempty"`
+	Dispatch bool                   `json:"dispatch,omitempty"` // enable multi-agent dispatch mode
 }
 
 // TaskResponse represents a response from a Python worker.

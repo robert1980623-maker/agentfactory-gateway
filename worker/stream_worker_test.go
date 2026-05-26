@@ -118,3 +118,57 @@ DEBUG: some debug output
 		t.Errorf("second event type = %q, want %q", events[1].Type, protocol.EventTypeDone)
 	}
 }
+
+// TestJSONLStreamParsing_DispatchEvent verifies that dispatch events
+// (with an agents array in the payload) are parsed correctly.
+func TestJSONLStreamParsing_DispatchEvent(t *testing.T) {
+	input := `{"type":"start","payload":{"task_id":"d1","task_type":"dispatch","total_agents":3}}
+{"type":"progress","payload":{"progress":0.3,"agents":[{"agent_id":"a1","role":"researcher","progress":0.5,"status":"running"},{"agent_id":"a2","role":"coder","progress":0.2,"status":"running"},{"agent_id":"a3","role":"reviewer","progress":0.0,"status":"pending"}]}}
+{"type":"done","payload":{"output":"all agents complete","total_agents":3}}
+`
+
+	scanner := bufio.NewScanner(strings.NewReader(input))
+
+	var events []protocol.SlackEvent
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		var event protocol.SlackEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("failed to parse line: %v\nline: %s", err, line)
+		}
+		events = append(events, event)
+	}
+
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(events))
+	}
+
+	// Verify start event has dispatch metadata.
+	if events[0].Payload.TaskType != "dispatch" {
+		t.Errorf("start task_type = %q, want %q", events[0].Payload.TaskType, "dispatch")
+	}
+	if events[0].Payload.TotalAgents != 3 {
+		t.Errorf("start total_agents = %d, want 3", events[0].Payload.TotalAgents)
+	}
+
+	// Verify progress event has agents array.
+	p := events[1].Payload
+	if len(p.Agents) != 3 {
+		t.Fatalf("expected 3 agents in progress, got %d", len(p.Agents))
+	}
+	if p.Agents[0].AgentID != "a1" || p.Agents[0].Role != "researcher" {
+		t.Errorf("agent[0] = %+v, want a1/researcher", p.Agents[0])
+	}
+	if p.Agents[0].Progress != 0.5 {
+		t.Errorf("agent[0].progress = %f, want 0.5", p.Agents[0].Progress)
+	}
+
+	// Verify done event.
+	if events[2].Payload.Output != "all agents complete" {
+		t.Errorf("done output = %q, want %q", events[2].Payload.Output, "all agents complete")
+	}
+}
