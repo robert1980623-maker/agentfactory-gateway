@@ -230,7 +230,119 @@ DEFAULT_MODEL = "qwen/qwen3.6-35b-a3b"  # 带组织前缀
 
 ---
 
-## 10. 紧急操作
+## 10. Slack Socket Mode 循环重连
+
+### 症状
+
+Gateway 启动后 Socket Mode 连接成功，但每 ~10 秒断开并自动重连。日志中出现大量 `[SOCKETMODE] Connected.` / `[SOCKETMODE ERROR]` 交替。
+
+### 根因分析
+
+深入阅读 `slack-go@v0.15.0` 的 `socketmode` 源码（`socket_mode_managed_conn.go`），定位到三个问题：
+
+**问题 1：`OptionPingInterval(15*time.Second)` 设置过短**
+
+`OptionPingInterval` 设置的是"收到 Slack PING 后的最大容忍等待时间"。默认值是 30 秒，Gateway 设了 15 秒。
+
+关键代码路径：
+```go
+// socket_mode_managed_conn.go — pingChan 缓冲只有 1
+pingChan := make(chan time.Time, 1)
+
+// Ping 处理：收到 Slack PING → 发送 PONG → 记录时间戳
+conn.SetPingHandler(func(appData string) error {
+    additionalPingHandler(appData)  // 写入 pingChan (非阻塞, 缓冲满则丢弃)
+    smc.handlePing(conn, appData)   // 同步写 Pong (10s deadline, 可能阻塞)
+    return nil
+})
+
+// Deadman timer: 每 pingInterval 检查一次
+ticker := time.NewTicker(pingInterval) // pingInterval = smc.maxPingInterval = 15s
+for {
+    select {
+    case lastPing = <-pingChan:
+    case now := <-ticker.C:
+        if now.Sub(lastPing) > pingInterval {
+            // → ping timeout → cancel → reconnect
+            sendErr(errors.New("ping timeout"))
+        }
+    }
+}
+```
+
+如果 Pong 写阻塞（网络抖动 / Slack 响应慢），`pingHandler` 返回延迟 → `pingChan` 缓冲溢出丢弃 → `lastPing` 不更新 → 15s ticker 触发 → **ping timeout → 重连**。
+
+**问题 2：`EventTypeIncomingError` 未处理**
+
+`gateway/slack.go` 的事件循环只处理 5 种事件类型：
+
+| 已处理 | 未处理（仅 log） |
+|--------|-----------------|
+| `EventsAPI` | `IncomingError` |
+| `Interactive` | `Disconnect` |
+| `Connecting` | `ErrorWriteFailed` |
+| `ConnectionError` | `ErrorBadMessage` |
+| `Connected` | `InvalidAuth` |
+
+当 `conn.ReadJSON` 出错时，socketmode 发送 `EventTypeIncomingError`，但 Gateway 只在 `default` 分支 log + Ack，**没有触发任何恢复动作**。
+
+**问题 3：`gorilla/websocket v1.4.2` 过旧**
+
+```
+github.com/gorilla/websocket v1.4.2  // indirect, 2020年发布
+```
+
+新版已修复多个 ping/pong 竞态条件。
+
+### 修复方案
+
+| 优先级 | 修复 | 文件 | 改动量 |
+|--------|------|------|--------|
+| **P0** | `OptionPingInterval` 改为 45s | `gateway/slack.go:67` | 改 1 个数字 |
+| **P0** | 处理 `EventTypeIncomingError` | `gateway/slack.go` switch | 加 1 个 case |
+| **P1** | Pong 写改为非阻塞 | socketmode 源码 patch | 需 fork 或等待上游 |
+| **P2** | 升级 `gorilla/websocket` 到 v1.5+ | `go.mod` | 改依赖版本 |
+
+**P0 代码修改**（`gateway/slack.go`）：
+
+```diff
+ socketmodeClient := socketmode.New(client,
+     socketmode.OptionDebug(true),
+-    socketmode.OptionPingInterval(15*time.Second),
++    socketmode.OptionPingInterval(45*time.Second),
+ )
+```
+
+```diff
+ case socketmode.EventTypeConnected:
+     log.Println("[SOCKETMODE] Connected.")
+     g.setConnected(true)
+     SetConnectionStatus(true)
++case socketmode.EventTypeIncomingError:
++    // conn.ReadJSON 出错（网络抖动 / ping timeout / 协议错误）
++    // 记录错误详情, 不 Ack — socketmode 内部会处理重连
++    log.Printf("[SOCKETMODE INCOMING ERROR] %v", evt.Data)
+ default:
+-    log.Printf("[SOCKETMODE] Unhandled event type: %v", evt.Type)
++    log.Printf("[SOCKETMODE] Unhandled event type: %v", evt.Type)
+     if evt.Request != nil {
+         g.sm.Ack(*evt.Request)
+     }
+```
+
+### 快速验证
+
+修复后重启 Gateway，观察日志：
+
+```bash
+# 应该看到连接稳定
+grep "Connected\|ConnectionError\|INCOMING ERROR" /path/to/logs
+
+# 正常: 一次 Connected, 不再重复
+# 修复前: Connected → ERROR → Connected → ERROR (每 10s 一次)
+```
+
+> **注意**: 这是 Gateway (Go) 层问题，与 AgentFactory Core (Python) 无关。
 
 ### 强制停止 Gateway
 
