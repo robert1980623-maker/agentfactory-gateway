@@ -63,11 +63,7 @@ func NewSlackGateway(botToken, appToken string, w *worker.PythonWorker, sw *work
 	client := slack.New(botToken, slack.OptionAppLevelToken(appToken))
 	stopCtx, stopCancel := context.WithCancel(context.Background())
 	socketmodeClient := socketmode.New(client,
-		// socketmode.OptionDebug(true), // Disabled in production — logs every ping/pong frame
-		socketmode.OptionPingInterval(60*time.Second), // Client-side ping disabled (server pings keep connection alive)
-		// NOTE: slack-go v0.15.0 hardcodes a 10s pong write deadline. Shorter ping intervals
-		// (e.g. 8s) caused disconnect loops in some network environments. Setting to 60s lets
-		// the server's pings handle keepalive without triggering client-side pong timeouts.
+		socketmode.OptionPingInterval(60*time.Second),
 	)
 	hitlHandler := NewHITLHandler(w, sw, stateMgr, client)
 	taskQueue := NewTaskQueue(TaskQueueConfig{MaxConcurrentTasks: 5, MaxPerChannel: 1})
